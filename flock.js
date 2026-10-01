@@ -1,7 +1,7 @@
 /**
  * @disk     flock
  * @author   claude
- * @version  2
+ * @version  3
  * @players  2-8
  * @about    Sheepdog trials for a crowd. Run your dog to drive the flock into your pen, bark to scatter a rival's, and guard what you hold: sheep trust their own dog and flee every other. Whatever stands in your pen at the horn is your score.
  * @tags     game, party, realtime, herding, lockstep
@@ -1118,29 +1118,58 @@ function drawOverlay(t, now) {
   }
 }
 
-// Your own dog is drawn from a guess a trip ahead, and a guess is remade every
-// time a tick lands. After a sharp turn the room may apply the turn a step
-// earlier or later than the guess assumed, and the remade guess then stands a
-// step or two away from the last one — drawn as it is, the dog twitches back
-// and forth on every turn. So the dog drawn follows the guess's own motion up
-// to the speed a dog can run, and closes any jump beyond that over a few
-// frames instead of in one. Only the drawing is smoothed; the meadow is not.
-let shownGuess = null;   // { x, y, tx, ty }: where your dog is drawn, and the guess last frame
-function settle(tx, ty) {
-  const g = shownGuess;
-  if (!g || (tx - g.x) ** 2 + (ty - g.y) ** 2 > 0.2 * 0.2) {
-    shownGuess = { x: tx, y: ty, tx, ty };
-    return [tx, ty];
+// Your own dog is drawn from the guess a trip ahead, and that guess is no steady
+// thing to draw from. It is walked between two of its steps a tick apart and
+// stops dead at the newer one whenever the next tick is late; and it is remade
+// on every tick, from a table where the room may have put a turn a step away
+// from where the guess had it. Drawn as it is, the dog stalls and leaps on
+// every late tick — sagging on a straight run — and twitches on a sharp turn.
+//
+// So the dog drawn runs at its own pace, every frame, the way its hand says
+// it is running, and the guess only pulls it gently to where it should be; a
+// guess far off — a table taken afresh — puts it there at once. Only the
+// drawing is smoothed: the meadow, and every rule in it, are untouched.
+const RUN_ON = 4;        // steps a late tick may be run past
+const PULL = 0.08;       // how much of the way to the guess the drawn dog closes a frame, at 60 frames a second
+const SNAP = 0.2;        // a guess this far off is taken at once
+
+function runOf(d) {
+  const len = Math.hypot(d.dx, d.dy);
+  return len > 60 ? [(d.dx / len) * DOG_V, (d.dy / len) * DOG_V] : [0, 0];
+}
+
+// Where the guess has your dog now, run on past its newer step when the tick
+// that would replace it is late.
+function ownAt(now) {
+  const me = myId();
+  if (!guessLast) {
+    const m = mineAt(now);
+    return m && m.to.p[me] ? dogAt(m, me) : null;
   }
-  let mx = tx - g.tx, my = ty - g.ty;
-  const most = DOG_V * 1.15 * frameDt, far = Math.hypot(mx, my);
-  if (far > most) { mx *= most / far; my *= most / far; }
-  g.x += mx; g.y += my;
-  const k = per60(0.2);
-  g.x += (tx - g.x) * k;
-  g.y += (ty - g.y) * k;
-  g.tx = tx; g.ty = ty;
-  return [g.x, g.y];
+  const a = guessPrev || guessLast, b = guessLast;
+  const pb = b.t.p[me];
+  if (!pb) return null;
+  const pa = a.t.p[me] || pb;
+  const at = stepNow(now) + Math.max(reach, STEPS_PER_TICK) - STEPS_PER_TICK;
+  if (at <= b.n) {
+    const k = b.n === a.n ? 1 : Math.max(0, (at - a.n) / (b.n - a.n));
+    return [lerp(pa.x, pb.x, k), lerp(pa.y, pb.y, k), pb];
+  }
+  const [vx, vy] = runOf(pb);
+  const t = Math.min(RUN_ON, at - b.n) * DT;
+  return [Math.max(DOG_R, Math.min(FW - DOG_R, pb.x + vx * t)), Math.max(DOG_R, Math.min(FH - DOG_R, pb.y + vy * t)), pb];
+}
+
+let shown = null;        // [x, y]: where your dog is drawn
+function settle(tx, ty, d) {
+  if (!shown || (tx - shown[0]) ** 2 + (ty - shown[1]) ** 2 > SNAP * SNAP) return (shown = [tx, ty]);
+  const [vx, vy] = runOf(d);
+  shown[0] = Math.max(DOG_R, Math.min(FW - DOG_R, shown[0] + (vx + d.sx) * frameDt));
+  shown[1] = Math.max(DOG_R, Math.min(FH - DOG_R, shown[1] + (vy + d.sy) * frameDt));
+  const k = per60(PULL);
+  shown[0] += (tx - shown[0]) * k;
+  shown[1] += (ty - shown[1]) * k;
+  return [shown[0], shown[1]];
 }
 
 function draw(now) {
@@ -1169,18 +1198,17 @@ function draw(now) {
   drawPens(t, own, per, now);
   drawSheep(t, b, now);
   const me = myId();
-  const m = mineAt(now);
   for (const id of playersIn(t)) {
     if (id === me) continue;
     const pos = dogAt(b, id);
     if (pos) drawDog(id, pos, colourOf(t, id), false, now);
   }
   for (const [id, look] of dogLook) if (now - look.seen > 1000) dogLook.delete(id);
-  const mine = m && m.to.p[me] ? dogAt(m, me) : null;
+  const mine = ownAt(now);
   if (mine) {
-    myPos = settle(mine[0], mine[1]);
-    drawDog(me, [myPos[0], myPos[1], mine[2]], colourOf(m.to, me), true, now);
-  } else myPos = shownGuess = null;
+    myPos = settle(mine[0], mine[1], mine[2]);
+    drawDog(me, [myPos[0], myPos[1], mine[2]], mine[2].k >= 0 ? SEAT[mine[2].k] : '#dddddd', true, now);
+  } else myPos = shown = null;
   drawBits();
   drawHud(t, own, per, now);
   drawOverlay(t, now);
@@ -1357,7 +1385,13 @@ function steerToMouse() {
   const r = cv.getBoundingClientRect();
   const dx = mouse.x - r.left - SX(myPos[0], myPos[1]);
   const dy = mouse.y - r.top - SY(myPos[0], myPos[1]);
-  if (Math.hypot(dx, dy) < 10) shove(0, 0);
+  // Stopped on arrival, and off again only once the pointer is clearly
+  // away: one threshold for both makes a dog that stops and starts on every
+  // twitch of the hand.
+  const far = Math.hypot(dx, dy);
+  if (far < 10) mouse.parked = true;
+  else if (far > 24) mouse.parked = false;
+  if (mouse.parked) shove(0, 0);
   else shove(...toField(dx, dy));
 }
 
