@@ -1,7 +1,7 @@
 /**
  * @disk     flock
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    Sheepdog trials for a crowd. Run your dog to drive the flock into your pen, bark to scatter a rival's, and guard what you hold: sheep trust their own dog and flee every other. Whatever stands in your pen at the horn is your score.
  * @tags     game, party, realtime, herding, lockstep
@@ -1118,6 +1118,31 @@ function drawOverlay(t, now) {
   }
 }
 
+// Your own dog is drawn from a guess a trip ahead, and a guess is remade every
+// time a tick lands. After a sharp turn the room may apply the turn a step
+// earlier or later than the guess assumed, and the remade guess then stands a
+// step or two away from the last one — drawn as it is, the dog twitches back
+// and forth on every turn. So the dog drawn follows the guess's own motion up
+// to the speed a dog can run, and closes any jump beyond that over a few
+// frames instead of in one. Only the drawing is smoothed; the meadow is not.
+let shownGuess = null;   // { x, y, tx, ty }: where your dog is drawn, and the guess last frame
+function settle(tx, ty) {
+  const g = shownGuess;
+  if (!g || (tx - g.x) ** 2 + (ty - g.y) ** 2 > 0.2 * 0.2) {
+    shownGuess = { x: tx, y: ty, tx, ty };
+    return [tx, ty];
+  }
+  let mx = tx - g.tx, my = ty - g.ty;
+  const most = DOG_V * 1.15 * frameDt, far = Math.hypot(mx, my);
+  if (far > most) { mx *= most / far; my *= most / far; }
+  g.x += mx; g.y += my;
+  const k = per60(0.2);
+  g.x += (tx - g.x) * k;
+  g.y += (ty - g.y) * k;
+  g.tx = tx; g.ty = ty;
+  return [g.x, g.y];
+}
+
 function draw(now) {
   flat();
   ctx.fillStyle = INK.page;
@@ -1153,9 +1178,9 @@ function draw(now) {
   for (const [id, look] of dogLook) if (now - look.seen > 1000) dogLook.delete(id);
   const mine = m && m.to.p[me] ? dogAt(m, me) : null;
   if (mine) {
-    myPos = [mine[0], mine[1]];
-    drawDog(me, mine, colourOf(m.to, me), true, now);
-  } else myPos = null;
+    myPos = settle(mine[0], mine[1]);
+    drawDog(me, [myPos[0], myPos[1], mine[2]], colourOf(m.to, me), true, now);
+  } else myPos = shownGuess = null;
   drawBits();
   drawHud(t, own, per, now);
   drawOverlay(t, now);
