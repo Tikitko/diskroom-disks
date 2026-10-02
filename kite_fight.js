@@ -1,7 +1,7 @@
 /**
  * @disk     kite_fight
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    Fly a fighting kite at dusk. Where two strings cross, the faster kite saws through the other, so climb, dive across a rival's line and swoop away before the ground. Lanterns sharpen your string; the leader is worth a bonus.
  * @tags     game, party, realtime, physics, lockstep
@@ -17,6 +17,13 @@
 // saws through whom is the same arithmetic on the same numbers on every
 // machine. A page with a console open can steer its own kite however it likes,
 // at a kite's own pace, and no faster.
+//
+// While a flyer is alone, a bot flies a kite with them. It is part of the sky
+// like any kite, and its hand is a function of the sky alone, so it flies the
+// same on every copy and says nothing over the wire. Strings saw in practice
+// as they do in a round, for no points. When a second flyer arrives, practice
+// runs on for three seconds under a note that says so, and the bot leaves
+// before the round is laid out: it never takes part in one.
 //
 // Your own kite does not wait for the trip: it is drawn from the agreed sky
 // played forward by the trip, with your hand already in it.
@@ -85,6 +92,7 @@ const WIND_MAX = 0.22, STORM_WIND = 0.55;
 
 const WAIT = 0, COUNT = 1, PLAY = 2, END = 3;
 const COUNT_STEPS = 3 * HZ;
+const JOIN_STEPS = 3 * HZ;     // practice runs on this long after a second flyer arrives
 const PLAY_STEPS = 90 * HZ;
 const END_STEPS = 8 * HZ;
 const STORM = 20 * HZ;         // the last steps of a round, when the wind gusts and points count double
@@ -362,7 +370,7 @@ function leads(w, id) {
 function cut(w, id, d, byId) {
   const cutter = w.p[byId];
   if (cutter && byId !== id) {
-    const pts = (CUT_PTS + (leads(w, id) ? BOUNTY_PTS : 0)) * (storm(w) ? 2 : 1);
+    const pts = w.ph === PLAY ? (CUT_PTS + (leads(w, id) ? BOUNTY_PTS : 0)) * (storm(w) ? 2 : 1) : 0;
     cutter.sc += pts;
     fx(w, 'cut', d.x, d.y, id, byId, pts);
   } else {
@@ -415,11 +423,75 @@ function lantern(w, ids) {
   w.lw = LANTERN_GAP;
 }
 
+// ── the practice bot ───────────────────────────────────────────────────────
+// An id no room hands out: the platform's ids are positive and a copy outside a
+// room is -1. The kernel never drops an id below zero for being silent.
+const BOT_ID = -100;
+const BOT_EVERY = 3;           // steps between the bot's decisions
+const humans = (w) => playersIn(w).filter((id) => id !== BOT_ID);
+
+// The bot flies while the sky waits for a round, and goes the moment a round's
+// countdown starts.
+function seatBot(w) {
+  const want = w.ph === WAIT && humans(w).length >= 1;
+  if (want && !w.p[BOT_ID] && Object.keys(w.p).length < MAX_P) {
+    const d = (w.p[BOT_ID] = kite({
+      ax: openSpot(w), x: 0, y: 0, vx: 0, vy: 0, dx: 0, dy: 0, h: 1, st: 0, t: 0, sh: 0, sw: -1,
+      sc: 0, wn: 0, k: freeSeat(w), hs: w.n, hc: 0,
+    }));
+    launch(w, d, GROUND - 0.12, -0.6);
+    fx(w, 'launch', d.ax, GROUND, BOT_ID);
+  } else if (!want && w.p[BOT_ID]) leave(w, BOT_ID);
+}
+
+function steer(d, x, y) {
+  const l = Math.sqrt(x * x + y * y);
+  if (l < 0.01) { d.dx = d.dy = 0; return; }
+  d.dx = Math.round((x / l) * 1000);
+  d.dy = Math.round((y / l) * 1000);
+}
+
+// The bot's hand: it climbs to a spot above your kite on its own side, dives
+// across your string from there, and pulls out before the ground. Caught on a
+// crossing it is losing, it climbs away; a lantern close by it takes. Now and
+// then it lets the string go slack a moment, so it can be beaten.
+function botHand(w) {
+  const d = w.p[BOT_ID];
+  if (!d || !flying(d) || w.n % BOT_EVERY) return;
+  let you = null;
+  for (const id of humans(w).sort((a, b) => a - b)) if (flying(w.p[id])) { you = w.p[id]; break; }
+  if (d.y > 0.66 && d.vy > 0) { steer(d, (d.ax - d.x) * 0.3, -1); return; }
+  if (draw01(w) < 0.08) { steer(d, 0, 0); return; }
+  if (w.L) {
+    const [lx, ly] = lanternAt(w.L), ex = lx - d.x, ey = ly - d.y;
+    if (ex * ex + ey * ey < 0.22 * 0.22) { steer(d, ex, ey); return; }
+  }
+  if (!you) { steer(d, (d.ax - d.x) * 0.5, 0.3 - d.y); return; }
+  const s = d.ax >= you.ax ? 1 : -1;
+  if (armed(d) && armed(you) && crosses(d, you) && sawOf(d) < sawOf(you)) {
+    steer(d, s, -1);
+    return;
+  }
+  const above = you.y - d.y, dxy = (d.x - you.x) * s;
+  if (above > 0.12 && dxy > -0.1 && dxy < 0.4 && d.y < 0.6) {
+    // Dive down and across your string, toward your side.
+    steer(d, you.x - s * 0.3 - d.x, you.y + 0.25 - d.y);
+    return;
+  }
+  steer(d, you.x + s * 0.25 - d.x, Math.max(0.12, you.y - 0.3) - d.y);
+}
+
 // One step of the sky: a function of the sky alone.
 function step(w) {
-  const many = playersIn(w).length;
+  seatBot(w);
+  const many = humans(w).length;
   if (w.ph === WAIT) {
-    if (many >= 2) begin(w);
+    // A second flyer ends practice, three seconds on: the count runs in pt,
+    // which a waiting sky otherwise leaves at zero. The bot goes first, so the
+    // round spreads the flyers along the ground without it.
+    if (many < 2) w.pt = 0;
+    else if (!w.pt) w.pt = JOIN_STEPS;
+    else if (--w.pt <= 0) { leave(w, BOT_ID); begin(w); }
   } else if (many < 2) {
     toWait(w);
   } else {
@@ -440,8 +512,9 @@ function step(w) {
     return;
   }
   wind(w);
+  botHand(w);
   for (const id of ids) fly(w, id, w.p[id]);
-  if (w.ph === PLAY) saw(w, ids);
+  if (w.ph === PLAY || w.ph === WAIT) saw(w, ids);
   else for (const id of ids) { const d = w.p[id]; d.sw = -1; if (flying(d)) d.h = Math.min(1, d.h + MEND); }
   lantern(w, ids);
 }
@@ -567,6 +640,7 @@ function inField() {
 function flat() { ctx.setTransform(dpx, 0, 0, dpx, 0, 0); }
 
 function nickOf(id) {
+  if (id === BOT_ID) return 'bot';
   if (room.me && id === room.me.id) return room.me.nick;
   const p = room.players.find((x) => x.id === id);
   const nick = p ? String(p.nick) : 'p' + id;
@@ -1123,7 +1197,7 @@ function drawHud(t, now) {
   const narrow = VW < 420;
   const titlePx = narrow ? 15 : 17;
   let status = '', colour = INK.text;
-  if (t.ph === WAIT) status = 'waiting for a second flyer';
+  if (t.ph === WAIT) status = 'practice';
   else if (t.ph === COUNT) status = 'round ' + t.rd + ' · get ready';
   else if (t.ph === PLAY) {
     status = 'round ' + t.rd + ' · ' + clock(t.pt);
@@ -1192,6 +1266,81 @@ function drawHud(t, now) {
   fitText(how, VW / 2, VH - 9, 12, INK.muted, VW - 20);
 }
 
+// ═══════════════════ the practice note ═══════════════════
+// What a player sees while nobody else is here, alike in every game on this
+// shelf: one short note at the foot of the screen, over the line of controls,
+// saying who they practise with and what starts the real thing — or, once
+// somebody has joined, that practice ends in a moment. It takes an empty strip
+// beside the field instead when one is tall enough, so it covers nothing, and
+// folds to its first line a few seconds in or at the first key or touch.
+const NOTE_FOLD_MS = 6000;
+const NOTE_FONT = "{w} {px}px ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', sans-serif";
+const noteFont = (px, wt) => NOTE_FONT.replace('{w}', String(wt)).replace('{px}', String(Math.round(px * 10) / 10));
+let noteSince = 0, noteSeen = -1e9, noteTouched = false;
+addEventListener('keydown', () => { noteTouched = true; }, true);
+addEventListener('pointerdown', () => { noteTouched = true; }, true);
+
+// `bands` are the free strips beside the field, as [top, bottom] in screen
+// pixels; `foot` is where the note's lower edge stands when none of them fits.
+// The note is centred on a span `vw` wide from `left`: the screen, by default.
+function practiceNote(now, vw, head, tip, bands, foot, left = 0) {
+  if (now - noteSeen > 500) { noteSince = now; noteTouched = false; }
+  noteSeen = now;
+  const two = !!tip && !noteTouched && now - noteSince < NOTE_FOLD_MS;
+  const h = two ? 50 : 30;
+  ctx.font = noteFont(13, 700);
+  const hw = ctx.measureText(head).width;
+  ctx.font = noteFont(12, 600);
+  const tw = two ? ctx.measureText(tip).width : 0;
+  const w = Math.min(vw - 16, Math.max(hw + 14, tw) + 28);
+  let y = foot - h, room = 0;
+  for (const [a, b] of bands) if (b - a >= h + 4 && b - a > room) { room = b - a; y = (a + b - h) / 2; }
+  const x = left + (vw - w) / 2, r = h / 2 > 15 ? 15 : h / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(12,16,30,0.84)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  const hk = Math.min(1, (w - 42) / Math.max(1, hw));
+  const hx = left + vw / 2 - (hw * hk + 14) / 2, hy = y + (two ? 17 : 15);
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 260);
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.arc(hx + 4, hy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.font = noteFont(13 * hk, 700);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.fillText(head, hx + 14, hy);
+  if (two) {
+    ctx.font = noteFont(12 * Math.min(1, (w - 28) / Math.max(1, tw)), 600);
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.textAlign = 'center';
+    ctx.fillText(tip, left + vw / 2, y + 35);
+  }
+  ctx.restore();
+}
+
+// Practice ends a moment after a second flyer arrives: who it was, as this
+// page sees it — the room lists its players in the order they came.
+function joinHead(t, left) {
+  const me = myId();
+  const order = (id) => { const i = room.players.findIndex((p) => p.id === id); return i < 0 ? 1e9 : i; };
+  const hs = humans(t).sort((a, b) => order(a) - order(b));
+  const last = hs[hs.length - 1];
+  return (last === me ? 'you joined ' + nickOf(hs[0]) : nickOf(last) + ' joined') + ' · practice ends in ' + left;
+}
+
 function panel(px, py, w, h) {
   ctx.fillStyle = INK.panel;
   roundRect(px - w / 2, py - h / 2, w, h, 14);
@@ -1207,11 +1356,10 @@ function drawOverlay(t, now) {
   const me = myId();
   const cx = VW / 2, cy = SY(0.42);
   if (t.ph === WAIT) {
-    const w = Math.min(VW - 32, 400), py = Math.max(TOP + 52, SY(0.16));
-    panel(cx, py, w, 92);
-    fitText('waiting for a second flyer', cx, py - 14, 18, INK.text, w - 24);
-    fitText('practise: climb high, then dive for speed, and pull out before the ground', cx, py + 12, 13, INK.muted, w - 24);
-    fitText('a round starts the moment somebody joins', cx, py + 32, 12, INK.dim, w - 24);
+    const two = humans(t).length >= 2;
+    const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
+    const tip = two ? null : 'climb high, then dive across the bot\'s string: the faster kite saws through';
+    practiceNote(now, VW, head, tip, [[TOP, SY(0) - 4]], SY(GROUND) - 6);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
