@@ -2182,6 +2182,7 @@ function applyStream(from, msg) {
     if (input === null || !Number.isInteger(from)) return;
     hand(world, from, input);
     world.seen[from] = world.n;
+    lateAgreed = null;
     if (from === myId()) heardMine(msg.s);
   } else if (msg.t === 'tick') {
     onTick(from, msg);
@@ -2431,6 +2432,7 @@ function played(steps, keep) {
 }
 
 function reshow() {
+  lateAgreed = lateMine = null;
   if (!world) return;
   if (!PREDICT || solo()) { guessPrev = guessLast = guessTable = null; return; }
   const reachNow = Math.max(aheadSteps(), STEPS_PER_TICK);
@@ -2440,15 +2442,26 @@ function reshow() {
   guessTable = t;
 }
 
+// A table among `list` — [{ n, t }], in step order — as drawn at step `at`.
+function walkAt(list, at) {
+  let i = list.length - 1;
+  while (i > 0 && list[i].n > at) i--;
+  const a = list[i], b = list[i + 1] || a;
+  const k = b === a ? 0 : Math.max(0, Math.min(1, (at - a.n) / (b.n - a.n)));
+  return { from: a.t, to: b.t, k };
+}
+
 // The agreed table as drawn: { from, to, k }.
 function agreedAt(now) {
   if (!agreed.length) return null;
   const at = stepNow(now) - SHOWN_BEHIND;
-  let i = agreed.length - 1;
-  while (i > 0 && agreed[i].n > at) i--;
-  const a = agreed[i], b = agreed[i + 1] || a;
-  const k = b === a ? 0 : Math.max(0, Math.min(1, (at - a.n) / (b.n - a.n)));
-  return { from: a.t, to: b.t, k };
+  const last = agreed[agreed.length - 1];
+  if (at > last.n && world && world.n === last.n) {
+    if (!lateAgreed) lateAgreed = lateFrom(last, world, PREDICT && !solo());
+    const to = Math.min(at, last.n + LATE_STEPS);
+    return walkAt(playOn(lateAgreed, Math.ceil(to)), to);
+  }
+  return walkAt(agreed, at);
 }
 
 // This copy's own piece as drawn: { from, to, k } — the agreed table where
@@ -2457,8 +2470,67 @@ function mineAt(now) {
   if (!guessLast) return agreedAt(now);
   const a = guessPrev || guessLast, b = guessLast;
   const at = stepNow(now) + Math.max(reach, STEPS_PER_TICK) - STEPS_PER_TICK;
+  if (at > b.n && world) {
+    // The guess's last table has every hand of this copy in it already.
+    if (!lateMine) lateMine = lateFrom(b, b.t, false);
+    const to = Math.min(at, b.n + LATE_STEPS);
+    return walkAt(playOn(lateMine, Math.ceil(to)), to);
+  }
   const k = b.n === a.n ? 1 : Math.max(0, Math.min(1, (at - a.n) / (b.n - a.n)));
   return { from: a.t, to: b.t, k };
+}
+
+// ── when a tick is late ─────────────────────────────────────────────────────
+// A tick that is late leaves the drawing nothing newer to walk to, and a
+// drawing that stands on the newest table until the tick lands is a game that
+// stops dead and then jumps — on a wire that stalls for a tenth of a second
+// now and then, which is any wifi, that is several times a minute. So the
+// drawing walks on into tables played forward from the newest one, every hand
+// held as it stands, and this copy's own where it guesses, at the steps they
+// will land at.
+//
+// Only the drawing walks on. The table, its fingerprints and everything that
+// is decided wait for the tick as before, and `live` is off, so no effect
+// comes of a table played this way: the effect comes with the tick. When the
+// tick lands the walk is dropped for the truth, and the two differ only if a
+// hand changed in between. That is why the walk is short: a point or a hit the
+// room never agreed on is on screen for a few frames at most, and a clock that
+// has stopped altogether — a host gone, a tab hidden — leaves the drawing
+// standing a little ahead rather than running away from the table.
+const LATE_REACH_MS = 120;
+const LATE_STEPS = Math.max(1, Math.round(LATE_REACH_MS / STEP_MS));
+let lateAgreed = null;                       // the walk on from the newest agreed table
+let lateMine = null;                         // the walk on from the guess's last table
+
+function lateFrom(start, tip, hands) {
+  return { list: [start], tip, hands, seq: 0 };
+}
+
+// The walk taken as far as step `to`, a step at a time, each kept: a frame
+// asks for the step it is at, and the walk is played once and not per frame.
+function playOn(late, to) {
+  const wasLive = live;
+  live = false;
+  try {
+    while (late.list[late.list.length - 1].n < to) {
+      const t = copyTable(late.tip);
+      if (late.hands) {
+        for (const h of unheard) {
+          if (h.seq <= late.seq) continue;
+          if (h.step > t.n) break;
+          hand(t, myId(), h.input);
+          late.seq = h.seq;
+        }
+      }
+      t.n += 1;
+      step(t);
+      late.tip = t;
+      late.list.push({ n: t.n, t });
+    }
+  } finally {
+    live = wasLive;
+  }
+  return late.list;
 }
 
 function wireNote() {
