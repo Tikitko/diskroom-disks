@@ -1006,6 +1006,7 @@ const SHOWN_BEHIND = 1.5 * STEPS_PER_TICK;   // steps the agreed drawing trails 
 const SHOWN_KEPT = 8;
 const agreed = [];                           // [{ n, t }], oldest first
 let stepClock = null;                        // when step 0 would have arrived, ms
+let stepClockGuessed = false;                // set from a table taken, not yet from a tick
 let guessPrev = null, guessLast = null;     // { n, t }
 let guessTable = null;
 let reach = 0;                               // steps the guess runs ahead of the agreed table
@@ -1026,9 +1027,16 @@ function keepAgreed(fresh) {
   // Early arrivals pull the clock in quickly, late ones push it out slowly:
   // it settles on the steady pace the host's ticks are sent at, not on the
   // wire's jitter.
+  //
+  // A table taken is no arrival: it stands a whole trip ahead of the first tick
+  // that comes back round, and a clock set by it is one that late ones would
+  // take seconds to push out — every frame of those seconds drawn on the newest
+  // table, the game moving in jolts. So it holds the clock only until that
+  // tick, and the tick sets it outright.
   const o = performance.now() - world.n * STEP_MS;
-  if (stepClock === null) stepClock = o;
+  if (stepClock === null || stepClockGuessed) stepClock = o;
   else stepClock += (o - stepClock) * (o < stepClock ? 0.3 : 0.02);
+  stepClockGuessed = fresh;
 }
 
 // The step the clock says it is, as a fraction.
