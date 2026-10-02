@@ -1,7 +1,7 @@
 /**
  * @disk     wind_up
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    Wind-up robots on a board that falls apart. Everyone secretly picks three move cards, then every robot runs its program at once, highest card first. Grab coins, shove rivals into the gaps and take theirs.
  * @tags     game, party, cards, programming, simultaneous
@@ -26,6 +26,10 @@
 // turn out from that with the same integer rules. What this does not stop is
 // a hostile host: its copy deals the cards and sees every pick before the
 // reveal, and nothing in a host-run game can take that away from it.
+//
+// A player alone in the room is dealt a practice game against two bots at
+// once, and another after it. When somebody joins, practice ends three seconds
+// on under a note that says so, and the host starts the real game.
 
 // ── rules ───────────────────────────────────────────────────────────────────
 
@@ -38,7 +42,8 @@ const REGS = 3;
 const MAX_SEATS = 8;
 const PLAN_MS = 20000;       // time to pick, on the host's clock
 const LOBBY_MS = 5000;
-const ALONE_MS = 9000;       // a host alone waits this long for company, then deals bots in
+const ALONE_MS = 9000;       // a host whose room has not said hello waits this long, then deals bots in
+const JOIN_MS = 3000;        // practice runs on this long after somebody joins
 const OVER_MS = 16000;
 const GAP_MS = 900;          // a turn's last frame stays up this long
 const STEP_MS = 230;         // one tile of movement
@@ -315,6 +320,7 @@ let S = blankTable(0);
 let haveTable = false;
 let tableHost = null;    // whose table this copy holds
 let endAt = 0;           // local clock: when this phase ends
+let joinEnd = 0;         // local clock: when practice ends for somebody who joined, 0 if it does not
 
 // The host's alone.
 const ready = new Set();
@@ -390,11 +396,15 @@ function addRobot(id, sc, rnd, maxRing) {
 }
 const readyHumans = () => [...ready].filter((id) => !isBot(id) && present(id));
 
+// Alone in the room, practice starts at once; with others in it, the host waits
+// for them to say hello.
 function hostLobby(now) {
   S = blankTable(S.g);
-  endAt = now + (solo() ? 2500 : readyHumans().length >= 2 ? LOBBY_MS : ALONE_MS);
+  endAt = now + (solo() || room.players.length < 2 ? 600 : readyHumans().length >= 2 ? LOBBY_MS : ALONE_MS);
   publish(now);
 }
+
+const practiceTable = () => S.ph !== 'lobby' && S.rb.some((r) => r.bot);
 
 function startMatch(now) {
   const humans = readyHumans().slice(0, MAX_SEATS);
@@ -490,6 +500,11 @@ function botPlan(r, hand) {
 function hostTick() {
   if (!amHost() || !haveTable) return;
   const now = performance.now();
+  // Somebody joined a practice game: it ends three seconds on, for the real one.
+  if (readyHumans().length >= 2 && practiceTable()) {
+    if (!joinEnd) { joinEnd = now + JOIN_MS; publish(now); }
+    else if (now >= joinEnd) { joinEnd = 0; startMatch(now); return; }
+  } else if (joinEnd) { joinEnd = 0; publish(now); }
   if (S.ph === 'lobby') {
     if (now >= endAt) startMatch(now);
   } else if (S.ph === 'plan') {
@@ -599,6 +614,7 @@ function wire(now) {
     lk: S.locked.slice(), pl: S.ph === 'play' ? S.plans : [], seed: S.ph === 'play' ? S.seed : 0,
     rd: readyHumans().filter((id) => id >= 0).slice(0, MAX_SEATS),
     ms: Math.max(0, Math.round(endAt - now)),
+    j: joinEnd ? Math.max(0, Math.round(joinEnd - now)) : -1,
   };
 }
 
@@ -654,6 +670,7 @@ function readTable(m) {
   return {
     S: { g: m.g, ph: m.ph, turn: m.turn, tiles, coins, rb, locked: m.lk.slice(), plans, seed, rd: m.rd.slice() },
     ms: Math.min(Math.max(m.ms, 0), 60000),
+    j: typeof m.j === 'number' && Number.isFinite(m.j) && m.j >= 0 ? Math.min(m.j, JOIN_MS) : -1,
   };
 }
 
@@ -713,6 +730,7 @@ room.on('message', (from, msg) => {
         if (!t) break;
         S = t.S;
         endAt = now + t.ms;
+        joinEnd = t.j >= 0 ? now + t.j : 0;
         haveTable = true;
         tableHost = from;
         observe(now);
@@ -1034,6 +1052,8 @@ function alpha(hex, a) {
 // Where everything goes. A tall frame puts the cards under the board, a wide
 // one beside it; either way the board is square and as large as fits.
 let G = null;
+// NOTE_ROOM under the board keeps the practice note off its bottom row.
+const NOTE_ROOM = 60;
 function geom() {
   const portrait = H >= W * 1.05;
   const topH = 64;
@@ -1045,7 +1065,7 @@ function geom() {
     ph = Math.round(ch * 2 + 64);
     px = 0;
     py = H - ph;
-    const avail = H - topH - ph - 8;
+    const avail = H - topH - ph - 8 - NOTE_ROOM;
     bs = Math.max(80, Math.min(W - 16, avail));
     bx = (W - bs) / 2;
     by = topH + Math.max(0, (avail - bs) / 2);
@@ -1056,7 +1076,7 @@ function geom() {
     px = W - pw;
     py = topH;
     ph = H - topH;
-    const availW = W - pw - 16, availH = H - topH - 10;
+    const availW = W - pw - 16, availH = H - topH - 10 - NOTE_ROOM;
     bs = Math.max(80, Math.min(availW, availH));
     bx = (W - pw - bs) / 2;
     by = topH + (availH - bs) / 2;
@@ -1526,6 +1546,13 @@ function draw(now, dt) {
   drawTop(now, scoreOf, lead);
   drawPanel(now, scoreOf);
   drawOverlay(now, scoreOf);
+  if (haveTable && practiceTable()) {
+    const head = joinEnd ? joinHead(Math.max(1, Math.ceil((joinEnd - now) / 1000)))
+      : 'practice with bots · a game starts when someone joins';
+    const tip = joinEnd ? null : 'pick three cards, every robot runs at once · shove rivals into the gaps';
+    const edge = G.by + G.bs + G.pad;
+    practiceNote(now, G.bs + 2 * G.pad, head, tip, [[edge + 4, (G.portrait ? G.py : H) - 4]], edge - 4, G.bx - G.pad);
+  }
 
   // tick in the last seconds, only for someone who still has to decide
   if (S.ph === 'plan' && canPlan() && !myLocked) {
@@ -1994,6 +2021,79 @@ function drawOverlay(now, scoreOf) {
   text(name, cx, by + bs * 0.5, bs * 0.075, col, 'center', 900, tw);
   text(top + (top === 1 ? ' coin' : ' coins'), cx, by + bs * 0.58, bs * 0.045, C.gold, 'center', 700, tw);
   text('Next game in ' + Math.max(0, Math.ceil((endAt - now) / 1000)) + 's', cx, by + bs * 0.67, bs * 0.04, C.dim, 'center', 600, tw);
+}
+
+// ═══════════════════ the practice note ═══════════════════
+// What a player sees while nobody else is here, alike in every game on this
+// shelf: one short note at the foot of the screen, over the line of controls,
+// saying who they practise with and what starts the real thing — or, once
+// somebody has joined, that practice ends in a moment. It takes an empty strip
+// beside the field instead when one is tall enough, so it covers nothing, and
+// folds to its first line a few seconds in or at the first key or touch.
+const NOTE_FOLD_MS = 6000;
+const NOTE_FONT = "{w} {px}px ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', sans-serif";
+const noteFont = (px, wt) => NOTE_FONT.replace('{w}', String(wt)).replace('{px}', String(Math.round(px * 10) / 10));
+let noteSince = 0, noteSeen = -1e9, noteTouched = false;
+addEventListener('keydown', () => { noteTouched = true; }, true);
+addEventListener('pointerdown', () => { noteTouched = true; }, true);
+
+// `bands` are the free strips beside the field, as [top, bottom] in screen
+// pixels; `foot` is where the note's lower edge stands when none of them fits.
+// The note is centred on a span `vw` wide from `left`: the screen, by default.
+function practiceNote(now, vw, head, tip, bands, foot, left = 0) {
+  if (now - noteSeen > 500) { noteSince = now; noteTouched = false; }
+  noteSeen = now;
+  const two = !!tip && !noteTouched && now - noteSince < NOTE_FOLD_MS;
+  const h = two ? 50 : 30;
+  ctx.font = noteFont(13, 700);
+  const hw = ctx.measureText(head).width;
+  ctx.font = noteFont(12, 600);
+  const tw = two ? ctx.measureText(tip).width : 0;
+  const w = Math.min(vw - 16, Math.max(hw + 14, tw) + 28);
+  let y = foot - h, room = 0;
+  for (const [a, b] of bands) if (b - a >= h + 4 && b - a > room) { room = b - a; y = (a + b - h) / 2; }
+  const x = left + (vw - w) / 2, r = h / 2 > 15 ? 15 : h / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(12,16,30,0.84)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  const hk = Math.min(1, (w - 42) / Math.max(1, hw));
+  const hx = left + vw / 2 - (hw * hk + 14) / 2, hy = y + (two ? 17 : 15);
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 260);
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.arc(hx + 4, hy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.font = noteFont(13 * hk, 700);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.fillText(head, hx + 14, hy);
+  if (two) {
+    ctx.font = noteFont(12 * Math.min(1, (w - 28) / Math.max(1, tw)), 600);
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.textAlign = 'center';
+    ctx.fillText(tip, left + vw / 2, y + 35);
+  }
+  ctx.restore();
+}
+
+// Practice ends a moment after somebody joins: who it was, as this page sees
+// it — the room lists its players in the order they came.
+function joinHead(left) {
+  const ps = room.players, last = ps[ps.length - 1];
+  const who = !last ? 'someone joined' : last.id === myId() ? 'you joined ' + nickOf(ps[0].id) : nickOf(last.id) + ' joined';
+  return who + ' · practice ends in ' + left;
 }
 
 // ── input ───────────────────────────────────────────────────────────────────
