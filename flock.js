@@ -1,7 +1,7 @@
 /**
  * @disk     flock
  * @author   claude
- * @version  3
+ * @version  4
  * @players  2-8
  * @about    Sheepdog trials for a crowd. Run your dog to drive the flock into your pen, bark to scatter a rival's, and guard what you hold: sheep trust their own dog and flee every other. Whatever stands in your pen at the horn is your score.
  * @tags     game, party, realtime, herding, lockstep
@@ -16,6 +16,13 @@
 // counter, and everything else is the same arithmetic on the same numbers on
 // every machine. A page with a console open can steer its own dog however it
 // likes, at the dog's own speed, and bark no oftener than anybody else.
+//
+// While a shepherd is alone in the meadow, a bot's dog works it with them. It
+// is part of the meadow like any dog, and its legs are a function of the meadow
+// alone, so it runs the same on every copy and says nothing over the wire. When
+// a second shepherd arrives, practice runs on for three seconds under a note
+// that says so, and the bot leaves before the round starts: it never takes
+// part in one.
 //
 // Your own dog does not wait for the trip: it is drawn from the agreed meadow
 // played forward by the trip, with your hand already in it.
@@ -67,6 +74,7 @@ const MAX_SHEEP = 40;
 
 const WAIT = 0, COUNT = 1, PLAY = 2, END = 3;
 const COUNT_STEPS = 3 * HZ;
+const JOIN_STEPS = 3 * HZ;     // practice runs on this long after a second shepherd arrives
 const PLAY_STEPS = 75 * HZ;
 const END_STEPS = 7 * HZ;
 const GOLD_AT = 25 * HZ;       // steps left in a round when the golden ram walks in
@@ -211,11 +219,94 @@ function bringGold(w) {
   fx(w, 'gold', x, y);
 }
 
+// ── the practice bot ───────────────────────────────────────────────────────
+// An id no room hands out: the platform's ids are positive and a copy outside a
+// room is -1. The kernel never drops an id below zero for being silent.
+const BOT_ID = -100;
+const BOT_EVERY = 3;           // steps between the bot's decisions
+const humans = (w) => playersIn(w).filter((id) => id !== BOT_ID);
+
+// The bot's dog works the meadow while it waits for a round, and goes the
+// moment a round's countdown starts.
+function seatBot(w) {
+  const want = w.ph === WAIT && humans(w).length >= 1;
+  if (want && !w.p[BOT_ID] && Object.keys(w.p).length < MAX_DOGS) {
+    const k = freePen(w);
+    const [hx, hy] = k >= 0 ? HEART[k] : [FW / 2, FH / 2];
+    w.p[BOT_ID] = { x: hx, y: hy, dx: 0, dy: 0, k, bs: 0, lb: -BARK_CD, bq: 0, sx: 0, sy: 0, hs: w.n, hc: 0, w: 0 };
+  } else if (!want && w.p[BOT_ID]) leave(w, BOT_ID);
+}
+
+function steer(d, x, y) {
+  const l = Math.sqrt(x * x + y * y);
+  if (l < 0.01) { d.dx = d.dy = 0; return; }
+  d.dx = Math.round((x / l) * 1000);
+  d.dy = Math.round((y / l) * 1000);
+}
+
+// The bot's legs: it picks the loose sheep nearest its own pen, gets round
+// behind them and walks them in. When you are well ahead it goes to bark at
+// your pen instead, and now and then it stands a moment, so it can be beaten.
+function botLegs(w) {
+  const d = w.p[BOT_ID];
+  if (!d || d.k < 0 || w.n % BOT_EVERY) return;
+  if (draw01(w) < 0.06) { steer(d, 0, 0); return; }
+  const per = tally(w);
+  let yours = -1;
+  for (const id of humans(w)) if (w.p[id].k >= 0) { yours = w.p[id].k; break; }
+  const [hx, hy] = HEART[d.k];
+  if (yours >= 0 && per[yours] - per[d.k] >= 4) {
+    const [yx, yy] = HEART[yours];
+    const ex = yx - d.x, ey = yy - d.y;
+    if (ex * ex + ey * ey < 0.12 * 0.12) {
+      if (w.n - d.lb >= BARK_CD) { d.lb = w.n; d.bq = 1; }
+      steer(d, hx - d.x, hy - d.y);
+    } else steer(d, ex, ey);
+    return;
+  }
+  // The loose sheep nearest the bot's pen, and the ones grazing round it.
+  let pick = -1, best = Infinity;
+  for (let i = 0; i < w.s.length; i++) {
+    const s = w.s[i];
+    if (s[6] !== -1) continue;
+    const ex = s[0] - hx, ey = s[1] - hy, dd = ex * ex + ey * ey;
+    if (dd < best) { best = dd; pick = i; }
+  }
+  if (pick < 0) { steer(d, hx - d.x, hy - d.y); return; }
+  let cx = 0, cy = 0, n = 0;
+  for (const s of w.s) {
+    if (s[6] !== -1) continue;
+    const ex = s[0] - w.s[pick][0], ey = s[1] - w.s[pick][1];
+    if (ex * ex + ey * ey < 0.15 * 0.15) { cx += s[0]; cy += s[1]; n += 1; }
+  }
+  cx /= n; cy /= n;
+  const gx = cx - hx, gy = cy - hy, gl = Math.sqrt(gx * gx + gy * gy) || 1;
+  const ux = gx / gl, uy = gy / gl;
+  const bx = cx + ux * 0.13, by = cy + uy * 0.13;
+  const rx = d.x - cx, ry = d.y - cy;
+  const behind = rx * ux + ry * uy;
+  const ex = bx - d.x, ey = by - d.y;
+  if (ex * ex + ey * ey < 0.06 * 0.06) { steer(d, hx - d.x, hy - d.y); return; }
+  if (behind < 0.03 && rx * rx + ry * ry < 0.3 * 0.3) {
+    // On the pen's side of them: go round, wide, on the side it stands.
+    const px = -uy, py = ux, side = rx * px + ry * py < 0 ? -1 : 1;
+    steer(d, cx + px * side * 0.24 + ux * 0.06 - d.x, cy + py * side * 0.24 + uy * 0.06 - d.y);
+    return;
+  }
+  steer(d, ex, ey);
+}
+
 // One step of the meadow: a function of the meadow alone.
 function step(w) {
-  const many = playersIn(w).length;
+  seatBot(w);
+  const many = humans(w).length;
   if (w.ph === WAIT) {
-    if (many >= 2) begin(w);
+    // A second shepherd ends practice, three seconds on: the count runs in pt,
+    // which a waiting meadow otherwise leaves at zero. The bot goes first, so
+    // its pen stands empty in the round.
+    if (many < 2) w.pt = 0;
+    else if (!w.pt) w.pt = JOIN_STEPS;
+    else if (--w.pt <= 0) { leave(w, BOT_ID); begin(w); }
   } else if (many < 2) {
     w.ph = WAIT;
     w.pt = 0;
@@ -233,6 +324,7 @@ function step(w) {
     }
   }
 
+  botLegs(w);
   const ids = playersIn(w);
   const dogs = ids.map((id) => w.p[id]);
 
@@ -462,6 +554,7 @@ muteBtn.title = 'sound on/off (M)';
 document.body.appendChild(muteBtn);
 
 let coarse = matchMedia('(pointer: coarse)').matches;
+const NOTE_ROOM = 60;
 let VW = 640, VH = 400, sc = 1, ox = 0, oy = 0, rot = false, TOP = 56, BOT = 28;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -472,7 +565,8 @@ function layout() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   TOP = VW < 420 ? 64 : 56;
   BOT = 28;
-  const aw = VW - 16, ah = VH - TOP - BOT;
+  // NOTE_ROOM under the meadow keeps the practice note off the pens.
+  const aw = VW - 16, ah = VH - TOP - BOT - NOTE_ROOM;
   // A tall screen gets the meadow turned on its side, so a phone held upright
   // sees it large rather than as a strip.
   rot = ah > aw * 1.15;
@@ -500,6 +594,7 @@ function inField() {
 function flat() { ctx.setTransform(dpx, 0, 0, dpx, 0, 0); }
 
 function nickOf(id) {
+  if (id === BOT_ID) return 'bot';
   if (room.me && id === room.me.id) return room.me.nick;
   const p = room.players.find((x) => x.id === id);
   const nick = p ? String(p.nick) : 'p' + id;
@@ -1014,7 +1109,7 @@ function drawHud(t, own, per, now) {
   const titlePx = narrow ? 15 : 17;
   // The status line: the phase, and the time left in it.
   let status = '', colour = INK.text;
-  if (t.ph === WAIT) status = 'waiting for another shepherd';
+  if (t.ph === WAIT) status = 'practice';
   else if (t.ph === COUNT) status = 'round ' + t.rd + ' · get ready';
   else if (t.ph === PLAY) {
     status = 'round ' + t.rd + ' · ' + clock(t.pt);
@@ -1057,6 +1152,81 @@ function drawHud(t, own, per, now) {
   fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20);
 }
 
+// ═══════════════════ the practice note ═══════════════════
+// What a player sees while nobody else is here, alike in every game on this
+// shelf: one short note at the foot of the screen, over the line of controls,
+// saying who they practise with and what starts the real thing — or, once
+// somebody has joined, that practice ends in a moment. It takes an empty strip
+// beside the field instead when one is tall enough, so it covers nothing, and
+// folds to its first line a few seconds in or at the first key or touch.
+const NOTE_FOLD_MS = 6000;
+const NOTE_FONT = "{w} {px}px ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', sans-serif";
+const noteFont = (px, wt) => NOTE_FONT.replace('{w}', String(wt)).replace('{px}', String(Math.round(px * 10) / 10));
+let noteSince = 0, noteSeen = -1e9, noteTouched = false;
+addEventListener('keydown', () => { noteTouched = true; }, true);
+addEventListener('pointerdown', () => { noteTouched = true; }, true);
+
+// `bands` are the free strips beside the field, as [top, bottom] in screen
+// pixels; `foot` is where the note's lower edge stands when none of them fits.
+// The note is centred on a span `vw` wide from `left`: the screen, by default.
+function practiceNote(now, vw, head, tip, bands, foot, left = 0) {
+  if (now - noteSeen > 500) { noteSince = now; noteTouched = false; }
+  noteSeen = now;
+  const two = !!tip && !noteTouched && now - noteSince < NOTE_FOLD_MS;
+  const h = two ? 50 : 30;
+  ctx.font = noteFont(13, 700);
+  const hw = ctx.measureText(head).width;
+  ctx.font = noteFont(12, 600);
+  const tw = two ? ctx.measureText(tip).width : 0;
+  const w = Math.min(vw - 16, Math.max(hw + 14, tw) + 28);
+  let y = foot - h, room = 0;
+  for (const [a, b] of bands) if (b - a >= h + 4 && b - a > room) { room = b - a; y = (a + b - h) / 2; }
+  const x = left + (vw - w) / 2, r = h / 2 > 15 ? 15 : h / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(12,16,30,0.84)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  const hk = Math.min(1, (w - 42) / Math.max(1, hw));
+  const hx = left + vw / 2 - (hw * hk + 14) / 2, hy = y + (two ? 17 : 15);
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 260);
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.arc(hx + 4, hy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.font = noteFont(13 * hk, 700);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.fillText(head, hx + 14, hy);
+  if (two) {
+    ctx.font = noteFont(12 * Math.min(1, (w - 28) / Math.max(1, tw)), 600);
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.textAlign = 'center';
+    ctx.fillText(tip, left + vw / 2, y + 35);
+  }
+  ctx.restore();
+}
+
+// Practice ends a moment after a second shepherd arrives: who it was, as this
+// page sees it — the room lists its players in the order they came.
+function joinHead(t, left) {
+  const me = myId();
+  const order = (id) => { const i = room.players.findIndex((p) => p.id === id); return i < 0 ? 1e9 : i; };
+  const hs = humans(t).sort((a, b) => order(a) - order(b));
+  const last = hs[hs.length - 1];
+  return (last === me ? 'you joined ' + nickOf(hs[0]) : nickOf(last) + ' joined') + ' · practice ends in ' + left;
+}
+
 function panel(cx, cy, w, h) {
   ctx.fillStyle = INK.panel;
   roundRect(cx - w / 2, cy - h / 2, w, h, 14);
@@ -1072,12 +1242,11 @@ function drawOverlay(t, now) {
   const cx = (fx0 + fx1) / 2, cy = (SY(0, 0) + SY(FW, FH)) / 2;
   const big = Math.max(18, Math.min(30, VW * 0.05));
   if (t.ph === WAIT) {
-    // Kept to the top of the meadow, so the flock in the middle stays in view.
-    const w = Math.min(VW - 32, 360), py = Math.min(SY(0, 0), SY(FW, FH)) + 58;
-    panel(cx, py, w, 92);
-    fitText('waiting for another shepherd', cx, py - 14, 18, INK.text, w - 24);
-    fitText('meanwhile, practise: steer sheep into your pen', cx, py + 12, 13, INK.muted, w - 24);
-    fitText('a round starts the moment a second dog joins', cx, py + 32, 12, INK.dim, w - 24);
+    const two = humans(t).length >= 2;
+    const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
+    const tip = two ? null : 'sheep flee every dog but their own · drive them into your pen before the bot does';
+    const top = Math.min(SY(0, 0), SY(FW, FH)), bottom = Math.max(SY(0, 0), SY(FW, FH));
+    practiceNote(now, VW, head, tip, [[TOP, top - 4], [bottom + 4, VH - BOT]], Math.min(bottom, VH - BOT) - 6);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
