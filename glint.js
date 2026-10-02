@@ -1,7 +1,7 @@
 /**
  * @disk     glint
  * @author   claude
- * @version  2
+ * @version  3
  * @players  2-8
  * @about    A duel of light on a board of mirrors. Flip any mirror to bend your beam into a rival's gem and drain its light, and turn their beams off yours. The leader pays extra, sparks pay the first beam to reach them, and whoever shines brightest when the clock runs out wins.
  * @tags     game, party, realtime, puzzle, lockstep, practice
@@ -62,6 +62,7 @@ const BOT_SLIP = 0.3;          // how often it takes a worse flip than the best 
 
 const WAIT = 0, COUNT = 1, PLAY = 2, END = 3;
 const COUNT_STEPS = 3 * HZ;
+const JOIN_STEPS = 3 * HZ;     // practice runs on this long after a second player arrives
 const PLAY_STEPS = 90 * HZ;
 const END_STEPS = 8 * HZ;
 const SURGE = 20 * HZ;         // the last steps of a round, where beams drain half as hard again
@@ -245,21 +246,19 @@ function leave(w, id) {
 
 const humansIn = (w) => playersIn(w).filter((id) => id !== BOT_ID);
 
-// The practice bot sits in whenever one person has the board to themselves,
-// and stands up the moment a second one arrives, who then get a round of
-// their own from the start. It lives in the table and is moved by the step,
-// so every copy plays it alike and nobody's page can steer it.
+// The practice bot sits in while the board waits for a round, so whoever has
+// it to themselves has somebody to play, and stands up just before a round
+// begins: it never takes part in one. It lives in the table and is moved by
+// the step, so every copy plays it alike and nobody's page can steer it.
 function seatBot(w) {
-  const humans = humansIn(w).length;
   const here = !!w.p[BOT_ID];
-  if (humans === 1 && !here) {
+  if (w.ph === WAIT && humansIn(w).length >= 1 && !here) {
     w.p[BOT_ID] = player({
       c: freeOf(w, 'c'), s: freeOf(w, 's'), L: START, tk: PURSE, q: BOT_THINK1, by: -1, hs: 0, hc: 0, wn: 0,
       st: 0, sk: 0,
     });
-  } else if (humans !== 1 && here) {
+  } else if ((w.ph !== WAIT || !humansIn(w).length) && here) {
     leave(w, BOT_ID);
-    if (humans >= 2 && (w.ph === COUNT || w.ph === PLAY)) begin(w);
   }
 }
 
@@ -289,7 +288,7 @@ function botScore(w, pv) {
 // helps it less.
 function botThink(w) {
   const d = w.p[BOT_ID];
-  if (!d || w.ph !== PLAY) return;
+  if (!d) return;
   if (d.q > 0) { d.q -= 1; return; }
   d.q = BOT_THINK0 + Math.floor(draw01(w) * (BOT_THINK1 - BOT_THINK0));
   if (d.tk < REFILL) return;
@@ -421,9 +420,14 @@ function sparks(w, shot) {
 
 function step(w) {
   seatBot(w);
-  const many = playersIn(w).length;
+  const many = humansIn(w).length;
   if (w.ph === WAIT) {
-    if (many >= 2) begin(w);
+    // A second player ends practice, three seconds on: the count runs in pt,
+    // which a waiting board otherwise leaves at zero. The bot stands up first,
+    // so the round's seats close up without it.
+    if (many < 2) w.pt = 0;
+    else if (!w.pt) w.pt = JOIN_STEPS;
+    else if (--w.pt <= 0) { leave(w, BOT_ID); begin(w); }
   } else if (many < 2) {
     toWait(w);
   } else {
@@ -467,9 +471,12 @@ function step(w) {
     const by = w.p[id].by;
     if (by !== was.get(id)) fx(w, by === -1 ? 'free' : 'hit', 0, id, by);
   }
-  if (w.ph !== PLAY) return;
+  // Practice drains like a round's first moments, with no clock to run down:
+  // a gem drained dry is filled again, so it goes on until somebody joins.
+  const practice = w.ph === WAIT;
+  if (w.ph !== PLAY && !practice) return;
 
-  const rate = rateOf(w);
+  const rate = practice ? RATE0 : rateOf(w);
   const top = leaderOf(w);
   for (const b of shot) {
     const v = gemOf.get(b.exit);
@@ -491,6 +498,7 @@ function step(w) {
       fx(w, 'spark', c, b.id);
     }
   }
+  if (practice) for (const id of ids) if (w.p[id].L === 0) w.p[id].L = START;
   sparks(w, shot);
 }
 
@@ -586,6 +594,7 @@ muteBtn.title = 'sound on/off (M)';
 document.body.appendChild(muteBtn);
 
 let coarse = matchMedia('(pointer: coarse)').matches;
+const NOTE_ROOM = 60;
 let VW = 640, VH = 400, cs = 30, ox = 0, oy = 0, TOP = 56, BOT = 26, dpx = 1;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -596,7 +605,8 @@ function layout() {
   dpx = dpr;
   TOP = VW < 420 ? 66 : 58;
   BOT = 26;
-  const aw = VW - 12, ah = Math.max(60, VH - TOP - BOT - 4);
+  // NOTE_ROOM under the board keeps the practice note off the bottom row of gems.
+  const aw = VW - 12, ah = Math.max(60, VH - TOP - BOT - 4 - NOTE_ROOM);
   cs = Math.max(8, Math.min(aw, ah) / (N + 2));
   ox = (VW - cs * (N + 2)) / 2;
   oy = TOP + (ah - cs * (N + 2)) / 2;
@@ -1284,8 +1294,7 @@ function drawHud(t, now) {
   const narrow = VW < 420;
   const titlePx = narrow ? 15 : 17;
   let status = '';
-  if (t.ph === WAIT) status = 'waiting for a rival';
-  else if (t.p[BOT_ID]) status = 'practice vs bot · ' + (t.ph === PLAY ? clock(t.pt) : t.ph === COUNT ? 'get ready' : 'over');
+  if (t.ph === WAIT) status = 'practice';
   else if (t.ph === COUNT) status = 'round ' + t.rd + ' · get ready';
   else if (t.ph === PLAY) status = 'round ' + t.rd + ' · ' + clock(t.pt) + (t.pt <= SURGE ? ' · SURGE' : '');
   else status = 'round ' + t.rd + ' · over';
@@ -1339,6 +1348,81 @@ function drawHud(t, now) {
   fitText(how, VW / 2, VH - 9, 12, INK.muted, VW - 20);
 }
 
+// ═══════════════════ the practice note ═══════════════════
+// What a player sees while nobody else is here, alike in every game on this
+// shelf: one short note at the foot of the screen, over the line of controls,
+// saying who they practise with and what starts the real thing — or, once
+// somebody has joined, that practice ends in a moment. It takes an empty strip
+// beside the field instead when one is tall enough, so it covers nothing, and
+// folds to its first line a few seconds in or at the first key or touch.
+const NOTE_FOLD_MS = 6000;
+const NOTE_FONT = "{w} {px}px ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', sans-serif";
+const noteFont = (px, wt) => NOTE_FONT.replace('{w}', String(wt)).replace('{px}', String(Math.round(px * 10) / 10));
+let noteSince = 0, noteSeen = -1e9, noteTouched = false;
+addEventListener('keydown', () => { noteTouched = true; }, true);
+addEventListener('pointerdown', () => { noteTouched = true; }, true);
+
+// `bands` are the free strips beside the field, as [top, bottom] in screen
+// pixels; `foot` is where the note's lower edge stands when none of them fits.
+// The note is centred on a span `vw` wide from `left`: the screen, by default.
+function practiceNote(now, vw, head, tip, bands, foot, left = 0) {
+  if (now - noteSeen > 500) { noteSince = now; noteTouched = false; }
+  noteSeen = now;
+  const two = !!tip && !noteTouched && now - noteSince < NOTE_FOLD_MS;
+  const h = two ? 50 : 30;
+  ctx.font = noteFont(13, 700);
+  const hw = ctx.measureText(head).width;
+  ctx.font = noteFont(12, 600);
+  const tw = two ? ctx.measureText(tip).width : 0;
+  const w = Math.min(vw - 16, Math.max(hw + 14, tw) + 28);
+  let y = foot - h, room = 0;
+  for (const [a, b] of bands) if (b - a >= h + 4 && b - a > room) { room = b - a; y = (a + b - h) / 2; }
+  const x = left + (vw - w) / 2, r = h / 2 > 15 ? 15 : h / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(12,16,30,0.84)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  const hk = Math.min(1, (w - 42) / Math.max(1, hw));
+  const hx = left + vw / 2 - (hw * hk + 14) / 2, hy = y + (two ? 17 : 15);
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 260);
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.arc(hx + 4, hy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.font = noteFont(13 * hk, 700);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.fillText(head, hx + 14, hy);
+  if (two) {
+    ctx.font = noteFont(12 * Math.min(1, (w - 28) / Math.max(1, tw)), 600);
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.textAlign = 'center';
+    ctx.fillText(tip, left + vw / 2, y + 35);
+  }
+  ctx.restore();
+}
+
+// Practice ends a moment after a second player arrives: who it was, as this
+// page sees it — the room lists its players in the order they came.
+function joinHead(t, left) {
+  const me = myId();
+  const order = (id) => { const i = room.players.findIndex((p) => p.id === id); return i < 0 ? 1e9 : i; };
+  const hs = humansIn(t).sort((a, b) => order(a) - order(b));
+  const last = hs[hs.length - 1];
+  return (last === me ? 'you joined ' + nickOf(hs[0]) : nickOf(last) + ' joined') + ' · practice ends in ' + left;
+}
+
 function panel(px, py, w, h) {
   ctx.fillStyle = INK.panel;
   roundRect(px - w / 2, py - h / 2, w, h, 14);
@@ -1348,17 +1432,17 @@ function panel(px, py, w, h) {
   ctx.stroke();
 }
 
-function drawOverlay(t) {
+function drawOverlay(t, now) {
   flat();
   const big = Math.max(18, Math.min(30, VW * 0.05));
   const me = myId();
   const cx = VW / 2, cy = PY((N - 1) / 2) - big;
   if (t.ph === WAIT) {
-    const w = Math.min(VW - 32, 420), py = PY((N - 1) / 2);
-    panel(cx, py, w, 96);
-    fitText('waiting for a rival', cx, py - 16, 18, INK.text, w - 24);
-    fitText('practise: flip mirrors and watch your beam bend', cx, py + 10, 13, INK.muted, w - 24);
-    fitText('a round starts the moment somebody joins', cx, py + 32, 12, INK.dim, w - 24);
+    const two = humansIn(t).length >= 2;
+    const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
+    const tip = two ? null : 'flip a mirror to bend your beam into the bot\'s gem · turn its beam off yours';
+    const edge = oy + cs * (N + 2);
+    practiceNote(now, VW, head, tip, [[TOP, oy - 4], [edge + 6, VH - BOT]], Math.min(edge, VH - BOT));
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
@@ -1373,8 +1457,7 @@ function drawOverlay(t) {
     const w = Math.min(VW - 24, 470);
     panel(cx, cy + big * 2.2 + 6, w, 52);
     fitText('bend your beam into a rival gem to drain its light', cx, cy + big * 2.2, 15, INK.text, w - 20);
-    fitText(t.p[BOT_ID] ? 'practice against the bot · a real round starts when somebody joins'
-      : 'and flip their beams off yours · the leader pays half again', cx, cy + big * 2.2 + 21, 13, INK.muted, w - 20);
+    fitText('and flip their beams off yours · the leader pays half again', cx, cy + big * 2.2 + 21, 13, INK.muted, w - 20);
   } else if (t.ph === PLAY && t.pt > PLAY_STEPS - HZ) {
     const k = (PLAY_STEPS - t.pt) / HZ;
     ctx.globalAlpha = 1 - k;
@@ -1515,7 +1598,7 @@ function draw(now) {
     ctx.fillRect(0, 0, VW, VH);
   }
   drawHud(t, now);
-  drawOverlay(t);
+  drawOverlay(t, now);
 }
 
 function drawCursor(g, look, now) {
