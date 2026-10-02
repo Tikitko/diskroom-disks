@@ -1,7 +1,7 @@
 /**
  * @disk     updraft
  * @author   claude
- * @version  2
+ * @version  3
  * @players  2-8
  * @about    Hot-air balloon brawl. You only steer by climbing or sinking into wind bands that blow different ways and keep turning. Land on a rival from above to pop them, shove them into the storm or the sea, and mind the sky closing in.
  * @tags     game, party, realtime, physics, lockstep
@@ -21,8 +21,10 @@
 //
 // While a pilot is alone in the sky, a trainer flies with them. It is part of
 // the sky like any balloon, and its pilot is a function of the sky alone, so it
-// flies the same on every copy and says nothing over the wire. It leaves the
-// moment a second pilot arrives, and it never takes part in a round.
+// flies the same on every copy and says nothing over the wire. When a second
+// pilot arrives, practice runs on for three seconds under a note that says so,
+// and the trainer leaves as the round's countdown starts: it never takes part
+// in a round.
 //
 // Your own balloon does not wait for the trip: it is drawn from the agreed sky
 // played forward by the trip, with your hand already in it.
@@ -84,6 +86,7 @@ const CEIL1 = 0.24, SEA1 = 0.8; // and where they have closed in to by the horn
 
 const WAIT = 0, COUNT = 1, PLAY = 2, END = 3;
 const COUNT_STEPS = 3 * HZ;
+const JOIN_STEPS = 3 * HZ;     // practice runs on this long after a second pilot arrives
 const PLAY_STEPS = 90 * HZ;
 const END_STEPS = 8 * HZ;
 const SQUEEZE_FROM = 25 * HZ;  // steps into a round before the sky starts to close
@@ -493,10 +496,10 @@ const TRAINER = -100;
 const BOT_EVERY = 4;           // steps between the trainer's decisions: slow enough to be beaten
 const humans = (w) => playersIn(w).filter((id) => id !== TRAINER).length;
 
-// The trainer comes while one pilot is alone and waiting, and goes the moment
-// that is no longer so.
+// The trainer flies while the sky is waiting for a round, and goes the moment a
+// round's countdown starts.
 function trainer(w) {
-  const want = w.ph === WAIT && humans(w) === 1;
+  const want = w.ph === WAIT && humans(w) >= 1;
   if (want && !w.p[TRAINER] && Object.keys(w.p).length < MAX_P) {
     const d = (w.p[TRAINER] = balloon({
       x: 0, y: 0, vx: 0, vy: 0, h: NEUTRAL, v: 0, l: 0, st: 0, t: 0, sc: 0, wn: 0, k: freeSeat(w),
@@ -504,12 +507,15 @@ function trainer(w) {
     }));
     w.ai = [0.5, 0];
     rise(w, TRAINER, d);
-  } else if (!want && w.p[TRAINER]) {
-    const d = w.p[TRAINER];
-    if (aloft(d)) fx(w, 'away', d.x, d.y, TRAINER);
-    leave(w, TRAINER);
-    w.ai = null;
-  }
+  } else if (!want && w.p[TRAINER]) dismiss(w);
+}
+
+function dismiss(w) {
+  const d = w.p[TRAINER];
+  if (!d) return;
+  if (aloft(d)) fx(w, 'away', d.x, d.y, TRAINER);
+  leave(w, TRAINER);
+  w.ai = null;
 }
 
 // The trainer's pilot: it rides the band that carries it toward you, drops on
@@ -560,7 +566,12 @@ function step(w) {
   trainer(w);
   const many = humans(w);
   if (w.ph === WAIT) {
-    if (many >= 2) begin(w);
+    // A second pilot ends practice, three seconds on: the count runs in pt,
+    // which a waiting sky otherwise leaves at zero. The trainer goes first, so
+    // the round spreads the balloons without it.
+    if (many < 2) w.pt = 0;
+    else if (!w.pt) w.pt = JOIN_STEPS;
+    else if (--w.pt <= 0) { dismiss(w); begin(w); }
   } else if (many < 2) {
     toWait(w);
   } else {
@@ -1387,7 +1398,7 @@ function drawHud(t, now) {
   const narrow = VW < 420;
   const titlePx = narrow ? 15 : 17;
   let status = '';
-  if (t.ph === WAIT) status = 'waiting for a second pilot';
+  if (t.ph === WAIT) status = 'practice';
   else if (t.ph === COUNT) status = 'round ' + t.rd + ' · get ready';
   else if (t.ph === PLAY) status = 'round ' + t.rd + ' · ' + clock(t.pt) + (t.top > CEIL0 + 0.001 ? ' · the sky is closing' : '');
   else status = 'round ' + t.rd + ' · over';
@@ -1433,6 +1444,81 @@ function drawHud(t, now) {
   fitText(how, VW / 2, VH - 8, 12, INK.muted, VW - 20);
 }
 
+// ═══════════════════ the practice note ═══════════════════
+// What a player sees while nobody else is here, alike in every game on this
+// shelf: one short note at the foot of the screen, over the line of controls,
+// saying who they practise with and what starts the real thing — or, once
+// somebody has joined, that practice ends in a moment. It takes an empty strip
+// beside the field instead when one is tall enough, so it covers nothing, and
+// folds to its first line a few seconds in or at the first key or touch.
+const NOTE_FOLD_MS = 6000;
+const NOTE_FONT = "{w} {px}px ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', sans-serif";
+const noteFont = (px, wt) => NOTE_FONT.replace('{w}', String(wt)).replace('{px}', String(Math.round(px * 10) / 10));
+let noteSince = 0, noteSeen = -1e9, noteTouched = false;
+addEventListener('keydown', () => { noteTouched = true; }, true);
+addEventListener('pointerdown', () => { noteTouched = true; }, true);
+
+// `bands` are the free strips beside the field, as [top, bottom] in screen
+// pixels; `foot` is where the note's lower edge stands when none of them fits.
+// The note is centred on a span `vw` wide from `left`: the screen, by default.
+function practiceNote(now, vw, head, tip, bands, foot, left = 0) {
+  if (now - noteSeen > 500) { noteSince = now; noteTouched = false; }
+  noteSeen = now;
+  const two = !!tip && !noteTouched && now - noteSince < NOTE_FOLD_MS;
+  const h = two ? 50 : 30;
+  ctx.font = noteFont(13, 700);
+  const hw = ctx.measureText(head).width;
+  ctx.font = noteFont(12, 600);
+  const tw = two ? ctx.measureText(tip).width : 0;
+  const w = Math.min(vw - 16, Math.max(hw + 14, tw) + 28);
+  let y = foot - h, room = 0;
+  for (const [a, b] of bands) if (b - a >= h + 4 && b - a > room) { room = b - a; y = (a + b - h) / 2; }
+  const x = left + (vw - w) / 2, r = h / 2 > 15 ? 15 : h / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(12,16,30,0.84)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  const hk = Math.min(1, (w - 42) / Math.max(1, hw));
+  const hx = left + vw / 2 - (hw * hk + 14) / 2, hy = y + (two ? 17 : 15);
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 260);
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.arc(hx + 4, hy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.font = noteFont(13 * hk, 700);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.fillText(head, hx + 14, hy);
+  if (two) {
+    ctx.font = noteFont(12 * Math.min(1, (w - 28) / Math.max(1, tw)), 600);
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.textAlign = 'center';
+    ctx.fillText(tip, left + vw / 2, y + 35);
+  }
+  ctx.restore();
+}
+
+// Practice ends a moment after a second pilot arrives: who it was, as this
+// page sees it — the room lists its players in the order they came.
+function joinHead(t, left) {
+  const me = myId();
+  const order = (id) => { const i = room.players.findIndex((p) => p.id === id); return i < 0 ? 1e9 : i; };
+  const hs = playersIn(t).filter((id) => id !== TRAINER).sort((a, b) => order(a) - order(b));
+  const last = hs[hs.length - 1];
+  return (last === me ? 'you joined ' + nickOf(hs[0]) : nickOf(last) + ' joined') + ' · practice ends in ' + left;
+}
+
 function panel(px, py, w, h) {
   ctx.fillStyle = INK.panel;
   roundRect(px - w / 2, py - h / 2, w, h, 14);
@@ -1442,17 +1528,17 @@ function panel(px, py, w, h) {
   ctx.stroke();
 }
 
-function drawOverlay(t) {
+function drawOverlay(t, now) {
   flat();
   const big = Math.max(18, Math.min(30, VW * 0.05));
   const me = myId();
   const cx = VW / 2, cy = SY(0.42);
   if (t.ph === WAIT) {
-    const w = Math.min(VW - 32, 440), py = TOP + 44;
-    panel(cx, py, w, 70);
-    fitText('practice with the trainer · waiting for a second pilot', cx, py - 12, 15, INK.text, w - 24);
-    fitText('each band of wind blows its own way: climb or sink into the one you want', cx, py + 8, 12, INK.muted, w - 24);
-    fitText('land on the trainer from above to pop it · a round starts when somebody joins', cx, py + 26, 12, INK.dim, w - 24);
+    const head = humans(t) >= 2 ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ)))
+      : 'practice with the trainer · a round starts when someone joins';
+    const tip = humans(t) >= 2 ? null : 'climb or sink into a wind band to steer · land on the trainer from above to pop it';
+    const fieldTop = SY(0), fieldBot = SY(1);
+    practiceNote(now, VW, head, tip, [[TOP, fieldTop], [fieldBot, VH - BOT]], Math.min(fieldBot, VH - BOT) - 8);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
@@ -1646,7 +1732,7 @@ function draw(now) {
     ctx.fillRect(0, 0, VW, VH);
   }
   drawHud(t, now);
-  drawOverlay(t);
+  drawOverlay(t, now);
 }
 
 // ═══════════════════ the hands ═══════════════════
