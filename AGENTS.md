@@ -189,3 +189,12 @@ An asymmetric realtime game in lockstep for 2-8 players. One player keeps
 the lighthouse and sweeps its beam across a bay. Everyone else rows crates to
 the coves and hides in the shadows of rocks. A boat the beam stays on is
 caught, and players take turns at the lamp.
+
+### bento
+
+A drafting game for 2-8 players, run by the host. Everyone is dealt a hidden
+tray of dishes, takes one at once, puts it into an empty compartment of their
+own three-by-three box and passes the rest on. Every dish scores by where it
+sits: salmon apart, tempura in clumps, pickles in corners, tamago in lines,
+rice beside different dishes, mochi saved for the end. Whoever trails gets a
+middle compartment that counts double. (Sushi Go with a grid.)
