@@ -1,23 +1,31 @@
 /**
  * @disk     flail
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
- * @about    An arena brawl where you never swing: your weapon hangs on a chain and only your running whirls it. Run in circles to wind up a flail, an axe, a meteor or an anchor, turn hard to whip it, and throw it when it hums. Last one standing takes the round.
+ * @about    A physics brawl where you never swing. Your weapon hangs on a real chain, and only the way you run whirls it: circle like a hammer thrower to wind it up, stop and it flies past you, turn hard to whip it. Let go to throw it. Last one standing takes the round.
  * @tags     game, party, realtime, physics, fighting, lockstep
  * @image    https://storage.tikitko.dev/diskroom/disks/thumbnails/flail.png
  */
 // flail.js — a brawl in which the weapon is driven by the feet, and the room's
 // order is the referee.
 //
-// Every copy holds the whole arena — every fighter, every weapon and every one
-// lying loose on the floor — and moves it only on what comes back round the
-// room, so every copy applies the same hands in the same order and holds the
-// same arena. Nobody sends where they stand, how fast their weapon turns, who
-// was hit or a score: a hand is a direction and a throw counter, and the rest
-// is the same arithmetic on the same numbers on every machine. A page with a
-// console open can steer its own fighter however it likes, at a fighter's own
-// pace, and spin its weapon no faster than its legs can.
+// Nothing here swings a weapon. A fighter's legs push its body; the head of
+// its weapon is a weight of its own, on a chain that pulls only when it is
+// taut (or a haft that pushes too). Run in a circle and the chain drags the
+// head round faster than you run; stop and it flies on past you; whatever the
+// head carries into somebody is shared between them as momentum, and a head
+// that hurts is one that comes in fast and heavy.
+//
+// Every copy holds the whole arena — every fighter, every head and every
+// weapon lying loose on the floor — and moves it only on what comes back round
+// the room, so every copy applies the same hands in the same order and holds
+// the same arena. Nobody sends where they stand, how fast their weapon flies,
+// who was hit or a score: a hand is a direction and a throw counter, and the
+// rest is the same arithmetic on the same numbers on every machine. A page
+// with a console open can steer its own fighter however it likes, at a
+// fighter's own pace, and its weapon flies no faster than its legs can drive
+// it.
 //
 // While a fighter is alone, a bot fights with them. It is part of the arena
 // like anybody, and its legs are a function of the arena alone, so it moves the
@@ -61,45 +69,34 @@ function draw01(w) {
 const HZ = 30;                 // steps of the arena a second
 const STEPS_PER_TICK = 2;      // steps one tick of the clock carries
 const PREDICT = true;          // draw your own fighter a trip ahead, with your hand in it
-const SUB = 3;                 // pieces one step is cut into, so a fast head cannot pass through a body
+const SUB = 4;                 // pieces one step is cut into, so a fast head cannot pass through a body
 const DT = 1 / (HZ * SUB);
 
 const R0 = 0.6;                // the arena's radius at the start of a round
 const RMIN = 0.34;             // what the closing wall leaves at the end of one
 const VIEW = 0.66;             // the half-width drawn round the arena
 const PR = 0.042;              // a fighter's radius
-const M_BODY = 2;              // a fighter's mass, against a weapon head's
-const ACC = 3.2;               // how hard legs push
-const KEEP = 0.9726;           // what one piece of a step leaves of a running fighter's speed
-const KNOCK_KEEP = 0.93;       // and of one knocked faster than it can run
-const RUN_BARE = 0.95;         // top speed with nothing in hand
+const M_BODY = 3;              // a fighter's mass, against a weapon head's
+const RUN = 0.95;              // the speed legs run at
+const ACC = 9;                 // the hardest legs change a fighter's speed, a second
 const GHOST_V = 0.45;
-const VCAP = 2.6;              // nothing moves faster than this, a knock included
-
-// The spin. Nothing turns a weapon but its fighter's legs: turning while
-// running feeds it in the way of the turn, a sudden change of pace whips it,
-// running straight lets it trail, and the air takes a little of it all along.
-const PUMP = 0.36;             // spin from turning on the run
-const COUP = 0.6;              // spin a change of pace adds to a weapon already turning
-const COUP_SLOW = 1.4;         // and swings one that hangs
-const FLING = 0.7;             // a stop throws a trailing head over your shoulder
-const TRAIL = 1.2;             // how a slow weapon swings round behind a runner
-const DAMP = 0.5;              // spin the air takes, a second
-const TUG = 0.5;               // how hard a whirling head pulls its fighter round
-const CAP = 3.6;               // the fastest a head flies
-const VMIN = 0.9;              // a head slower than this only taps
-const ACC_MOST = 6;            // the hardest change of pace legs make, a second
-const TURN_MOST = 12;          // the sharpest turn that feeds a spin, radians a second
+const VCAP = 3;                // no body moves faster than this, a knock included
+const HCAP = 6;                // and no head
+const AIR = 0.12;              // what the air takes of a flying head, a second
+const FLOOR = 1.5;             // and the floor of a slow one: a head that drags stops
+const LYING = 4;               // a weapon nobody holds slides to a stop this fast
+const BOUNCE = 0.5;            // what a head keeps of its speed off a wall or a body
+const VMIN = 1;                // a head that comes in slower than this only shoves
+const DMG = 18;                // health per unit of speed past VMIN, per unit of a head's mass
 
 // The weapons. `L` the chain or haft, `m` the head's mass, `r` its radius,
-// `dmg` health per unit of speed past VMIN, `knock` how far a hit sends,
-// `run` its fighter's top speed, `sq` the square root of `m`, written out
-// because a root taken here would be a root taken on every copy.
+// `edge` how much a hit of a given weight hurts, and `rigid` a haft, which
+// pushes as well as pulls; a chain only pulls, and goes slack.
 const WEAPONS = [
-  { name: 'flail', L: 0.15, m: 1, r: 0.03, dmg: 13, knock: 0.55, run: 0.8, sq: 1 },
-  { name: 'axe', L: 0.11, m: 0.8, r: 0.032, dmg: 16, knock: 0.35, run: 0.84, sq: 0.894427191 },
-  { name: 'meteor', L: 0.24, m: 0.55, r: 0.022, dmg: 11, knock: 0.42, run: 0.84, sq: 0.741619849 },
-  { name: 'anchor', L: 0.14, m: 1.9, r: 0.038, dmg: 14, knock: 0.95, run: 0.7, sq: 1.378404875 },
+  { name: 'flail', L: 0.15, m: 1, r: 0.03, edge: 1, rigid: 0 },
+  { name: 'axe', L: 0.11, m: 0.8, r: 0.032, edge: 1.35, rigid: 1 },
+  { name: 'meteor', L: 0.24, m: 0.6, r: 0.022, edge: 1, rigid: 0 },
+  { name: 'anchor', L: 0.14, m: 2, r: 0.038, edge: 1, rigid: 0 },
 ];
 const KINDS = WEAPONS.length;
 
@@ -108,9 +105,7 @@ const ARMOR = 30;              // what a trailing fighter starts a round with on
 const IFRAMES = 9;             // steps a fighter cannot be hurt again after a hit
 const CREDIT_STEPS = 5 * HZ;   // a knock-out this soon after a hit is the hitter's
 const RESPAWN = 2 * HZ;        // in practice, the knocked-out are back this soon
-const THROW_KEEP = 0.95;       // what one step leaves of a flying weapon's speed
-const SLIDE_KEEP = 0.8;        // and of one sliding on the floor
-const LAND_V = 0.35;           // a thrown weapon slower than this has landed
+const LAND_V = 0.4;            // a thrown weapon slower than this has landed
 const PICK_LOCK = 15;          // steps before a thrower can take back what it threw
 const SPAWN_EVERY = 7 * HZ;
 const LOOSE_MOST = 3;          // weapons lying about before more stop arriving
@@ -134,22 +129,22 @@ const SHRINK_END = 65 * HZ;    // and when it has closed down to RMIN
 // so every fighter is made by one function with its fields in one order.
 //   p:  player id -> a fighter (see `fighter`)
 //   it: weapons not in anybody's hand, each
-//       [x, y, vx, vy, kind, owner, flying, steps until it lands, ux, uy, spin]
+//       [x, y, vx, vy, kind, owner, flying, steps until it lands]
 //   sp: steps until the next weapon falls in; R: the wall
 //   res: the last round's [id, points gained, points held] rows; win/champ: ids or -1
 function freshTable(seed) {
   return { rng: seed | 0, ph: WAIT, pt: 0, rd: 0, R: R0, sp: SPAWN_EVERY, p: {}, it: [], res: null, win: -1, champ: -1 };
 }
 
-const FIELDS = ['x', 'y', 'vx', 'vy', 'dx', 'dy', 'bs', 'wk', 'ux', 'uy', 'w', 'hp', 'ar', 'al', 'ot', 'iv',
+const FIELDS = ['x', 'y', 'vx', 'vy', 'dx', 'dy', 'bs', 'wk', 'hx', 'hy', 'hvx', 'hvy', 'hp', 'ar', 'al', 'ot', 'iv',
   'hb', 'ht', 'tq', 'pk', 'sc', 'rg', 'k', 'hs', 'hc'];
 //   x, y, vx, vy: the body; dx, dy: the hand's direction in thousandths; bs:
-//   throw counter as last heard; wk: the weapon in hand, -1 for none; ux, uy:
-//   which way its head hangs from the body; w: how fast it turns, radians a
-//   second; hp, ar: health and armour; al: standing; ot: the step it went
-//   down; iv: the step it can be hurt again; hb, ht: who last hit it, and when;
-//   tq: a throw to make; pk: the step it last threw; sc: points; rg: points
-//   this round; k: seat, which is its colour; hs, hc: hands this step.
+//   throw counter as last heard; wk: the weapon in hand, -1 for none; hx, hy,
+//   hvx, hvy: its head, where it is and how it flies; hp, ar: health and
+//   armour; al: standing; ot: the step it went down; iv: the step it can be
+//   hurt again; hb, ht: who last hit it, and when; tq: a throw to make; pk: the
+//   step it last threw; sc: points; rg: points this round; k: seat, which is
+//   its colour; hs, hc: hands this step.
 function fighter(v) {
   const s = {};
   for (const f of FIELDS) s[f] = v[f];
@@ -158,8 +153,8 @@ function fighter(v) {
 
 function newFighter(w, bs) {
   return fighter({
-    x: 0, y: 0, vx: 0, vy: 0, dx: 0, dy: 0, bs, wk: -1, ux: 1, uy: 0, w: 0, hp: HP, ar: 0, al: 0, ot: w.n,
-    iv: 0, hb: -1, ht: 0, tq: 0, pk: -PICK_LOCK, sc: 0, rg: 0, k: freeSeat(w), hs: w.n, hc: 0,
+    x: 0, y: 0, vx: 0, vy: 0, dx: 0, dy: 0, bs, wk: -1, hx: 0, hy: 0, hvx: 0, hvy: 0, hp: HP, ar: 0, al: 0,
+    ot: w.n, iv: 0, hb: -1, ht: 0, tq: 0, pk: -PICK_LOCK, sc: 0, rg: 0, k: freeSeat(w), hs: w.n, hc: 0,
   });
 }
 
@@ -172,20 +167,25 @@ function freeSeat(w) {
   return 0;
 }
 
-// Back on the floor with a weapon in hand, somewhere the arena picks.
-function arm(w, d) {
-  d.wk = Math.floor(draw01(w) * KINDS);
-  const a = draw01(w) * TAU;
-  d.ux = dcos(a);
-  d.uy = dsin(a);
-  d.w = 0;
+// A weapon in hand, its head hanging still at the end of its chain `a` radians
+// round.
+function hold(d, kind, ax, ay) {
+  const W = WEAPONS[kind];
+  d.wk = kind;
+  d.hx = d.x + ax * W.L;
+  d.hy = d.y + ay * W.L;
+  d.hvx = d.vx;
+  d.hvy = d.vy;
 }
+
+// Back on the floor with a weapon in hand, somewhere the arena picks.
 function respawn(w, d) {
   const a = draw01(w) * TAU, r = 0.12 + draw01(w) * 0.3;
   d.x = dcos(a) * r;
   d.y = dsin(a) * r;
   d.vx = d.vy = 0;
-  arm(w, d);
+  const b = draw01(w) * TAU;
+  hold(d, Math.floor(draw01(w) * KINDS), dcos(b), dsin(b));
   d.hp = HP; d.ar = 0; d.al = 1; d.iv = w.n + IFRAMES * 3; d.hb = -1; d.ht = 0; d.tq = 0;
 }
 
@@ -244,8 +244,8 @@ function begin(w) {
   w.R = R0;
   w.it = [];
   w.sp = SPAWN_EVERY;
-  // Everybody round a ring, evenly, the ring turned a different way each round;
-  // whoever trails the leader starts with armour on.
+  // Everybody round a ring, evenly, the ring turned a different way each round,
+  // each weapon hanging outward; whoever trails the leader starts with armour.
   const ids = playersIn(w).sort((a, b) => a - b);
   let top = 0;
   for (const id of ids) top = Math.max(top, w.p[id].sc);
@@ -253,11 +253,10 @@ function begin(w) {
   ids.forEach((id, i) => {
     const d = w.p[id];
     respawn(w, d);
-    const a = turn + (i / ids.length) * TAU;
-    d.x = dcos(a) * 0.32;
-    d.y = dsin(a) * 0.32;
-    d.ux = dcos(a);
-    d.uy = dsin(a);
+    const a = turn + (i / ids.length) * TAU, ca = dcos(a), sa = dsin(a);
+    d.x = ca * 0.3;
+    d.y = sa * 0.3;
+    hold(d, d.wk, ca, sa);
     d.iv = 0;
     d.rg = 0;
     d.ar = d.sc < top ? ARMOR : 0;
@@ -296,21 +295,12 @@ function rimAt(e) {
   return RMIN;
 }
 
-// Where a fighter's weapon head is, and how fast it flies, on the floor.
-function headOf(d) {
-  const W = WEAPONS[d.wk];
-  const s = W.L * d.w;
-  return [d.x + d.ux * W.L, d.y + d.uy * W.L, d.vx - d.uy * s, d.vy + d.ux * s];
-}
-
-function dropWeapon(w, d, flying, owner, keep) {
+// A weapon leaves a hand as it is: the head flies on at its own speed.
+function letGo(w, d, flying, owner) {
   if (d.wk < 0) return;
-  const [hx, hy, hvx, hvy] = headOf(d);
-  if (w.it.length < ITEMS_MOST) {
-    w.it.push([hx, hy, hvx * keep, hvy * keep, d.wk, owner, flying, 0, d.ux, d.uy, d.w * 0.6]);
-  }
+  if (w.it.length < ITEMS_MOST) w.it.push([d.hx, d.hy, d.hvx, d.hvy, d.wk, owner, flying, 0]);
   d.wk = -1;
-  d.w = 0;
+  d.hvx = d.hvy = 0;
 }
 
 function knockOut(w, id, d) {
@@ -320,7 +310,7 @@ function knockOut(w, id, d) {
   d.ar = 0;
   d.tq = 0;
   fx(w, 'ko', d.x, d.y, id, d.hb);
-  dropWeapon(w, d, 0, -1, 0.4);
+  letGo(w, d, 0, -1);
   if (w.ph !== PLAY) return;
   const by = d.hb;
   if (by !== id && w.p[by] && w.n - d.ht <= CREDIT_STEPS) {
@@ -330,53 +320,127 @@ function knockOut(w, id, d) {
   }
 }
 
-// Something flying at `vx, vy` from `x, y` meets fighter `vid`. The approach
-// along the line between them decides: past VMIN it is a hit and hurts by the
-// weapon's measure, slower it only taps. Returns how fast it came in, or 0 for
-// nothing at all.
-function strike(w, by, vid, x, y, vx, vy, W, r) {
+// A head — `o` holds its position and velocity under the names `px, py, vx,
+// vy` — meets fighter `vid`. They part as two bodies do, by their masses, and
+// what decides the rest is how fast the head came in along the line between
+// them: past VMIN it is a hit and hurts by the head's weight and edge, slower
+// it only shoves. Returns how fast it came in, or 0 when they did not meet.
+function strike(w, by, vid, o, W) {
   const v = w.p[vid];
-  const nx0 = v.x - x, ny0 = v.y - y, dd = nx0 * nx0 + ny0 * ny0, reach = PR + r;
+  const nx0 = v.x - o.px, ny0 = v.y - o.py, dd = nx0 * nx0 + ny0 * ny0, reach = PR + W.r;
   if (dd >= reach * reach) return 0;
   const dist = Math.sqrt(dd), nx = dist > 1e-9 ? nx0 / dist : 1, ny = dist > 1e-9 ? ny0 / dist : 0;
-  const s = (vx - v.vx) * nx + (vy - v.vy) * ny;
-  if (s <= 0.12) return 0;
-  // The weapon is rigid to its fighter: whoever it rests on is pushed aside.
-  v.x += nx * (reach - dist) * 0.5;
-  v.y += ny * (reach - dist) * 0.5;
+  const ih = 1 / W.m, ib = 1 / M_BODY, over = reach - dist;
+  o.px -= (nx * over * ih) / (ih + ib);
+  o.py -= (ny * over * ih) / (ih + ib);
+  v.x += (nx * over * ib) / (ih + ib);
+  v.y += (ny * over * ib) / (ih + ib);
+  const s = (o.vx - v.vx) * nx + (o.vy - v.vy) * ny;
+  if (s <= 0) return 0;
+  const j = ((1 + BOUNCE) * s) / (ih + ib);
+  o.vx -= nx * j * ih;
+  o.vy -= ny * j * ih;
+  v.vx += nx * j * ib;
+  v.vy += ny * j * ib;
   if (s < VMIN || w.n < v.iv) {
-    v.vx += nx * s * 0.25;
-    v.vy += ny * s * 0.25;
-    fx(w, 'tap', x + nx * r, y + ny * r, vid);
+    if (s > 0.3) fx(w, 'tap', o.px + nx * W.r, o.py + ny * W.r, vid);
     return s;
   }
-  const dmg = Math.max(1, Math.round((s - VMIN) * W.dmg));
-  const kick = s * W.knock;
-  v.vx += nx * kick;
-  v.vy += ny * kick;
+  const dmg = Math.max(1, Math.round((s - VMIN) * W.m * W.edge * DMG));
   v.iv = w.n + IFRAMES;
   v.hb = by;
   v.ht = w.n;
   const soak = Math.min(v.ar, dmg);
   v.ar -= soak;
   v.hp = Math.max(0, v.hp - (dmg - soak));
-  fx(w, 'hit', x + nx * r, y + ny * r, vid, by, dmg);
+  fx(w, 'hit', o.px + nx * W.r, o.py + ny * W.r, vid, by, dmg);
   if (v.hp <= 0) knockOut(w, vid, v);
   return s;
 }
 
-// A weapon's head bounces off something: it turns back the way it came,
-// slower.
-function rebound(d, k) {
-  d.w = -d.w * k;
+// Two heads that meet part as two bodies do, by their masses.
+function clash(w, a, A, b, B, ida, idb) {
+  const dx = b.px - a.px, dy = b.py - a.py, dd = dx * dx + dy * dy, m = A.r + B.r;
+  if (dd >= m * m) return;
+  const dist = Math.sqrt(dd), nx = dist > 1e-9 ? dx / dist : 1, ny = dist > 1e-9 ? dy / dist : 0;
+  const ia = 1 / A.m, ib = 1 / B.m, over = m - dist;
+  a.px -= (nx * over * ia) / (ia + ib);
+  a.py -= (ny * over * ia) / (ia + ib);
+  b.px += (nx * over * ib) / (ia + ib);
+  b.py += (ny * over * ib) / (ia + ib);
+  const s = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
+  if (s <= 0) return;
+  const j = ((1 + 0.7) * s) / (ia + ib);
+  a.vx -= nx * j * ia; a.vy -= ny * j * ia;
+  b.vx += nx * j * ib; b.vy += ny * j * ib;
+  if (s > 0.8) fx(w, 'clang', (a.px + b.px) / 2, (a.py + b.py) / 2, Math.min(9, Math.round(s * 2)), ida, idb);
 }
 
-function clampSpeed(o, top) {
-  const v = Math.sqrt(o.vx * o.vx + o.vy * o.vy);
-  if (v > top) { o.vx = (o.vx / v) * top; o.vy = (o.vy / v) * top; }
+function capSpeed(o, kx, ky, top) {
+  const v = Math.sqrt(o[kx] * o[kx] + o[ky] * o[ky]);
+  if (v > top) { o[kx] = (o[kx] / v) * top; o[ky] = (o[ky] / v) * top; }
 }
 
-// One piece of a step: legs, spin, walls, bodies, heads and loose weapons.
+// A head flying through the air, or dragging on the floor once it is slow.
+function drag(v) {
+  return 1 - (AIR + FLOOR / (1 + 6 * v * v)) * DT;
+}
+
+// A head as the collisions see it, and back.
+const headView = (d) => ({ px: d.hx, py: d.hy, vx: d.hvx, vy: d.hvy });
+function headBack(d, o) { d.hx = o.px; d.hy = o.py; d.hvx = o.vx; d.hvy = o.vy; }
+const itemView = (it) => ({ px: it[0], py: it[1], vx: it[2], vy: it[3] });
+function itemBack(it, o) { it[0] = o.px; it[1] = o.py; it[2] = o.vx; it[3] = o.vy; }
+
+// The chain. Body and head move on their own; then, if the chain is past its
+// length — or a haft is off its length either way — the head is put back on
+// it. A chain that was already taut carries the head round with it: the head's
+// speed across the chain is kept and turned to the chain's new direction,
+// which is what a taut chain does, and what keeps a whirl from bleeding speed
+// on every piece of a step. A chain that has just gone taut takes the outward
+// part of the head's speed in one jerk. Either way the change in the head's
+// speed against the body is shared between them by their masses, so a heavy
+// head swung hard pulls its fighter round.
+function chain(d, W, ux, uy, taut) {
+  const dx = d.hx - d.x, dy = d.hy - d.y, dist = Math.sqrt(dx * dx + dy * dy);
+  const near = PR + W.r;
+  if (!W.rigid && dist <= W.L && dist >= near) return;
+  const nx = dist > 1e-9 ? dx / dist : ux, ny = dist > 1e-9 ? dy / dist : uy;
+  const rx = d.hvx - d.vx, ry = d.hvy - d.vy;
+  let qx, qy, len;
+  if (!W.rigid && dist < near) {
+    // A slack head that comes back at its own fighter glances off it.
+    const rr = rx * nx + ry * ny;
+    const cut = rr < 0 ? rr * (1 + BOUNCE) : 0;
+    qx = rx - nx * cut;
+    qy = ry - ny * cut;
+    len = near;
+  } else if (taut) {
+    const rr = rx * ux + ry * uy, rt = -rx * uy + ry * ux;
+    const keep = W.rigid ? 0 : Math.min(rr, 0);
+    qx = -ny * rt + nx * keep;
+    qy = nx * rt + ny * keep;
+    len = W.L;
+  } else {
+    const rr = rx * nx + ry * ny, cut = W.rigid ? rr : Math.max(rr, 0);
+    qx = rx - nx * cut;
+    qy = ry - ny * cut;
+    len = W.L;
+  }
+  const mu = M_BODY / (W.m + M_BODY), cx = qx - rx, cy = qy - ry;
+  d.hvx += cx * mu;
+  d.hvy += cy * mu;
+  d.vx -= cx * (1 - mu);
+  d.vy -= cy * (1 - mu);
+  // The body gives way by its share of the difference, the head by the rest.
+  const ox = d.x + nx * len - d.hx, oy = d.y + ny * len - d.hy;
+  d.hx += ox * mu;
+  d.hy += oy * mu;
+  d.x -= ox * (1 - mu);
+  d.y -= oy * (1 - mu);
+}
+
+// One piece of a step: legs, heads, chains, walls, bodies and loose weapons.
 function physics(w, ids) {
   const R = w.R;
   for (const id of ids) {
@@ -392,87 +456,57 @@ function physics(w, ids) {
       if (gr > VIEW - 0.04) { d.x = (d.x / gr) * (VIEW - 0.04); d.y = (d.y / gr) * (VIEW - 0.04); }
       continue;
     }
-    const W = d.wk >= 0 ? WEAPONS[d.wk] : null;
-    const ovx = d.vx, ovy = d.vy, top = W ? W.run : RUN_BARE;
-    const v0 = Math.sqrt(ovx * ovx + ovy * ovy);
-    d.vx += ix * ACC * DT;
-    d.vy += iy * ACC * DT;
-    if (W) {
-      // A whirling head pulls its fighter toward it, the heavier the harder.
-      const tug = (W.m / M_BODY) * W.L * d.w * d.w * TUG;
-      d.vx += d.ux * tug * DT;
-      d.vy += d.uy * tug * DT;
+    // Legs pull the body's speed toward the one asked for, no harder than ACC:
+    // a knock carries a fighter on until its legs catch it.
+    let ax = ix * RUN - d.vx, ay = iy * RUN - d.vy;
+    const al = Math.sqrt(ax * ax + ay * ay), most = ACC * DT;
+    if (al > most) { ax = (ax / al) * most; ay = (ay / al) * most; }
+    d.vx += ax;
+    d.vy += ay;
+    capSpeed(d, 'vx', 'vy', VCAP);
+    if (d.wk < 0) {
+      d.x += d.vx * DT;
+      d.y += d.vy * DT;
+      continue;
     }
-    // Legs never carry a fighter past its top speed, and a knock that did
-    // dies away quickly rather than being cut off where it lands.
-    const keep = v0 > top ? KNOCK_KEEP : KEEP;
-    d.vx *= keep;
-    d.vy *= keep;
-    clampSpeed(d, Math.max(top, v0 * keep));
+    const W = WEAPONS[d.wk];
+    const dx = d.hx - d.x, dy = d.hy - d.y, dist = Math.sqrt(dx * dx + dy * dy);
+    const ux = dist > 1e-9 ? dx / dist : 1, uy = dist > 1e-9 ? dy / dist : 0;
+    const taut = dist >= W.L * 0.999;
+    const hv = Math.sqrt(d.hvx * d.hvx + d.hvy * d.hvy), k = drag(hv);
+    d.hvx *= k;
+    d.hvy *= k;
     d.x += d.vx * DT;
     d.y += d.vy * DT;
-    if (!W) continue;
-
-    // What turns the weapon is what the legs did, so a change of pace is
-    // capped at what legs can do: a knock taken is not a spin given.
-    let ax = (d.vx - ovx) / DT, ay = (d.vy - ovy) / DT;
-    const al = Math.sqrt(ax * ax + ay * ay);
-    if (al > ACC_MOST) { ax = (ax / al) * ACC_MOST; ay = (ay / al) * ACC_MOST; }
-    const tx = -d.uy, ty = d.ux, spd = Math.abs(d.w) * W.L;
-    const sign = d.w >= 0 ? 1 : -1;
-    const kick = -(ax * tx + ay * ty) / W.L;
-    let wd;
-    if (spd < 0.4) {
-      wd = COUP_SLOW * kick;
-      // Stopping with the head behind you throws it over your shoulder.
-      const au = ax * d.ux + ay * d.uy;
-      if (au > 0) wd += (FLING * au * sign) / W.L;
-    } else {
-      wd = COUP * Math.abs(kick) * sign;
-    }
-    wd -= (TRAIL * (d.vx * tx + d.vy * ty)) / W.L / (1 + spd * spd);
-    const vo = Math.sqrt(ovx * ovx + ovy * ovy), vn = Math.sqrt(d.vx * d.vx + d.vy * d.vy);
-    if (vo > 0.05 && vn > 0.05) {
-      const turn = Math.max(-TURN_MOST, Math.min(TURN_MOST, (ovx * d.vy - ovy * d.vx) / (vo * vn) / DT));
-      wd += (PUMP * turn * vn) / W.L / W.sq;
-    }
-    wd -= DAMP * d.w;
-    d.w += wd * DT;
-    const most = CAP / W.L;
-    if (d.w > most) d.w = most;
-    else if (d.w < -most) d.w = -most;
-    const a = d.w * DT, c = dcos(a), s = dsin(a);
-    const nux = d.ux * c - d.uy * s, nuy = d.ux * s + d.uy * c;
-    const ul = Math.sqrt(nux * nux + nuy * nuy) || 1;
-    d.ux = nux / ul;
-    d.uy = nuy / ul;
+    d.hx += d.hvx * DT;
+    d.hy += d.hvy * DT;
+    chain(d, W, ux, uy, taut);
+    capSpeed(d, 'hvx', 'hvy', HCAP);
   }
 
-  // Bodies stay inside the wall; a weapon that meets the wall rings off it and
-  // pushes its fighter back, because a haft or a taut chain does not bend.
+  // Bodies stay inside the wall; heads ring off it.
   for (const id of ids) {
     const d = w.p[id];
     if (!d.al) continue;
-    let r = Math.sqrt(d.x * d.x + d.y * d.y);
+    const r = Math.sqrt(d.x * d.x + d.y * d.y);
     if (r > R - PR) {
       const nx = d.x / r, ny = d.y / r;
       d.x = nx * (R - PR);
       d.y = ny * (R - PR);
       const vr = d.vx * nx + d.vy * ny;
-      if (vr > 0) { d.vx -= nx * vr * 1.4; d.vy -= ny * vr * 1.4; }
-      r = R - PR;
+      if (vr > 0) { d.vx -= nx * vr * (1 + BOUNCE * 0.5); d.vy -= ny * vr * (1 + BOUNCE * 0.5); }
     }
     if (d.wk < 0) continue;
     const W = WEAPONS[d.wk];
-    const [hx, hy, hvx, hvy] = headOf(d);
-    const hr = Math.sqrt(hx * hx + hy * hy);
+    const hr = Math.sqrt(d.hx * d.hx + d.hy * d.hy);
     if (hr > R - W.r) {
-      const nx = hx / hr, ny = hy / hr, out = hvx * nx + hvy * ny, over = hr - (R - W.r);
-      d.x -= nx * over;
-      d.y -= ny * over;
+      const nx = d.hx / hr, ny = d.hy / hr, out = d.hvx * nx + d.hvy * ny;
+      d.hx = nx * (R - W.r);
+      d.hy = ny * (R - W.r);
       if (out > 0) {
+        d.hvx -= nx * out * (1 + BOUNCE);
+        d.hvy -= ny * out * (1 + BOUNCE);
         if (out > VMIN) fx(w, 'wall', nx * R, ny * R, id, Math.min(9, Math.round(out * 2)));
-        rebound(d, 0.45);
       }
     }
   }
@@ -488,85 +522,69 @@ function physics(w, ids) {
     b.x += nx * over; b.y += ny * over;
     const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
     if (vn < 0) {
-      const j2 = -0.8 * vn;
+      const j2 = -0.75 * vn;
       a.vx -= nx * j2; a.vy -= ny * j2;
       b.vx += nx * j2; b.vy += ny * j2;
     }
   }
 
-  // Heads meet bodies, and heads meet heads.
+  // Heads meet other fighters, and heads meet heads.
   for (const id of ids) {
     const d = w.p[id];
-    if (!d.al || d.wk < 0) continue;
-    const W = WEAPONS[d.wk];
     for (const vid of ids) {
-      if (vid === id || !w.p[vid].al || d.wk < 0 || !d.al) continue;
-      const [hx, hy, hvx, hvy] = headOf(d);
-      const s = strike(w, id, vid, hx, hy, hvx, hvy, W, W.r);
-      if (s >= VMIN) rebound(d, 0.25);
-      else if (s > 0) rebound(d, 0.5);
+      if (vid === id || !d.al || d.wk < 0 || !w.p[vid].al) continue;
+      const W = WEAPONS[d.wk], o = headView(d);
+      strike(w, id, vid, o, W);
+      if (d.wk >= 0) headBack(d, o);
     }
   }
   for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
     const a = w.p[ids[i]], b = w.p[ids[j]];
     if (!a.al || !b.al || a.wk < 0 || b.wk < 0) continue;
-    const A = WEAPONS[a.wk], B = WEAPONS[b.wk];
-    const ha = headOf(a), hb = headOf(b);
-    const dx = hb[0] - ha[0], dy = hb[1] - ha[1], dd = dx * dx + dy * dy, m = A.r + B.r;
-    if (dd >= m * m) continue;
-    const dist = Math.sqrt(dd), nx = dist > 1e-9 ? dx / dist : 1, ny = dist > 1e-9 ? dy / dist : 0;
-    const s = (ha[2] - hb[2]) * nx + (ha[3] - hb[3]) * ny;
-    if (s <= 0.2) continue;
-    // A clash: both heads turn back, the lighter one more.
-    const k = A.m / (A.m + B.m);
-    rebound(a, 0.2 + 0.5 * k);
-    rebound(b, 0.7 - 0.5 * k);
-    if (s > 0.6) fx(w, 'clang', (ha[0] + hb[0]) / 2, (ha[1] + hb[1]) / 2, Math.min(9, Math.round(s * 2)), ids[i], ids[j]);
+    const oa = headView(a), ob = headView(b);
+    clash(w, oa, WEAPONS[a.wk], ob, WEAPONS[b.wk], ids[i], ids[j]);
+    headBack(a, oa);
+    headBack(b, ob);
   }
 
   // Loose weapons: thrown ones fly and hurt, landed ones slide to a stop.
   for (const it of w.it) {
     if (it[7] > 0) continue;
     const W = WEAPONS[it[4]];
+    const v = Math.sqrt(it[2] * it[2] + it[3] * it[3]);
+    const k = it[6] ? drag(v) : 1 - LYING * DT;
+    it[2] *= k;
+    it[3] *= k;
     it[0] += it[2] * DT;
     it[1] += it[3] * DT;
-    const a = it[10] * DT, c = dcos(a), s = dsin(a);
-    const nux = it[8] * c - it[9] * s, nuy = it[8] * s + it[9] * c, ul = Math.sqrt(nux * nux + nuy * nuy) || 1;
-    it[8] = nux / ul;
-    it[9] = nuy / ul;
     const r = Math.sqrt(it[0] * it[0] + it[1] * it[1]);
     if (r > R - W.r) {
       const nx = it[0] / r, ny = it[1] / r, vr = it[2] * nx + it[3] * ny;
       it[0] = nx * (R - W.r);
       it[1] = ny * (R - W.r);
       if (vr > 0) {
-        it[2] -= nx * vr * 1.6;
-        it[3] -= ny * vr * 1.6;
+        it[2] -= nx * vr * (1 + BOUNCE);
+        it[3] -= ny * vr * (1 + BOUNCE);
         if (it[6] && vr > VMIN) fx(w, 'wall', nx * R, ny * R, it[5], Math.min(9, Math.round(vr * 2)));
       }
     }
     if (!it[6]) continue;
     for (const vid of ids) {
       if (vid === it[5] || !w.p[vid].al) continue;
-      const hit = strike(w, it[5], vid, it[0], it[1], it[2], it[3], W, W.r);
-      if (hit > 0) { it[2] *= -0.3; it[3] *= -0.3; it[10] = -it[10]; }
+      const o = itemView(it);
+      strike(w, it[5], vid, o, W);
+      itemBack(it, o);
     }
-    // A whirling head bats a thrown weapon away, and makes it its own.
+    // A head in somebody's hand that meets a thrown weapon bats it away, and
+    // makes it its own.
     for (const id of ids) {
       const d = w.p[id];
       if (!d.al || d.wk < 0 || id === it[5]) continue;
-      const D = WEAPONS[d.wk];
-      const [hx, hy, hvx, hvy] = headOf(d);
-      const dx = it[0] - hx, dy = it[1] - hy, dd = dx * dx + dy * dy, m = W.r + D.r;
-      if (dd >= m * m) continue;
-      const dist = Math.sqrt(dd), nx = dist > 1e-9 ? dx / dist : 1, ny = dist > 1e-9 ? dy / dist : 0;
-      const sIn = (hvx - it[2]) * nx + (hvy - it[3]) * ny;
-      if (sIn <= 0) continue;
-      it[2] += nx * sIn * 1.6;
-      it[3] += ny * sIn * 1.6;
-      it[5] = id;
-      rebound(d, 0.5);
-      fx(w, 'clang', (it[0] + hx) / 2, (it[1] + hy) / 2, Math.min(9, Math.round(sIn * 2)), id, -9);
+      const oa = headView(d), ob = itemView(it), was = ob.vx * ob.vx + ob.vy * ob.vy;
+      clash(w, oa, WEAPONS[d.wk], ob, W, id, -9);
+      headBack(d, oa);
+      itemBack(it, ob);
+      if (ob.vx * ob.vx + ob.vy * ob.vy !== was) it[5] = id;
     }
   }
 }
@@ -575,7 +593,8 @@ function physics(w, ids) {
 // An id no room hands out: the platform's ids are positive and a copy outside a
 // room is -1. The kernel never drops an id below zero for being silent.
 const BOT_ID = -100;
-const BOT_EVERY = 4;           // steps between the bot's decisions: slow enough to be beaten
+const BOT_EVERY = 3;           // steps between the bot's decisions: slow enough to be beaten
+const BOT_TURN = TAU / (0.85 * HZ); // how fast the bot's circle turns, a step
 const humans = (w) => playersIn(w).filter((id) => id !== BOT_ID);
 
 // The bot stands in the arena while it waits for a round, and goes the moment
@@ -595,12 +614,14 @@ function steer(d, x, y) {
 }
 
 // The bot's legs: unarmed, it runs for the nearest weapon on the floor; armed,
-// it circles you to wind its weapon up, closes in once it hums, and now and
-// then throws it. Every so often it only stands there, so it can be caught out.
+// it runs small circles the way a hammer thrower turns, drifting to keep a
+// little out of your reach, cuts in once its head flies fast, and now and then
+// lets go of it at you. Every so often it only stands there, so it can be
+// caught out.
 function botLegs(w) {
   const d = w.p[BOT_ID];
   if (!d || !d.al || w.n % BOT_EVERY) return;
-  if (draw01(w) < 0.18) { steer(d, 0, 0); return; }
+  if (draw01(w) < 0.12) { steer(d, 0, 0); return; }
   if (d.wk < 0) {
     let best = null, bd = 1e9;
     for (const it of w.it) {
@@ -621,16 +642,19 @@ function botLegs(w) {
   if (!you) { steer(d, -d.x, -d.y); return; }
   const W = WEAPONS[d.wk];
   const vx = you.x - d.x, vy = you.y - d.y, dist = Math.sqrt(vx * vx + vy * vy) || 1e-6;
-  const spd = Math.abs(d.w) * W.L;
-  if (spd > 2.6 && dist > 0.22 && dist < 0.48 && draw01(w) < 0.06) { d.tq = 1; return; }
-  if (spd > 2.2 && dist < W.L + 0.25) { steer(d, vx, vy); return; }
-  // Round you, a little further out than its weapon reaches, the way it spins,
-  // and away from the wall.
-  const orbit = W.L + 0.16, way = d.w < 0 ? -1 : 1;
-  const tx = (-vy / dist) * way, ty = (vx / dist) * way, pull = Math.max(-1, Math.min(1, (dist - orbit) * 5));
-  let sx = tx + (vx / dist) * pull, sy = ty + (vy / dist) * pull;
+  const sx_ = d.hvx - d.vx, sy_ = d.hvy - d.vy, spd = Math.sqrt(sx_ * sx_ + sy_ * sy_);
+  // Let go when the head is flying fast and toward you.
+  const hv = Math.sqrt(d.hvx * d.hvx + d.hvy * d.hvy) || 1e-6;
+  const tx = you.x - d.hx, ty = you.y - d.hy, tl = Math.sqrt(tx * tx + ty * ty) || 1e-6;
+  if (hv > 2.4 && tl < 0.45 && (d.hvx * tx + d.hvy * ty) / (hv * tl) > 0.85 && draw01(w) < 0.35) { d.tq = 1; return; }
+  if (spd > 2 && dist < W.L + 0.2) { steer(d, vx, vy); return; }
+  const a = w.n * BOT_TURN;
+  let sx = dcos(a), sy = dsin(a);
+  const pull = Math.max(-0.8, Math.min(0.8, (dist - (W.L + 0.22)) * 4));
+  sx += (vx / dist) * pull;
+  sy += (vy / dist) * pull;
   const r = Math.sqrt(d.x * d.x + d.y * d.y);
-  if (r > w.R * 0.8) { sx -= (d.x / r) * 1.5; sy -= (d.y / r) * 1.5; }
+  if (r > w.R * 0.75) { sx -= (d.x / r) * 1.2; sy -= (d.y / r) * 1.2; }
   steer(d, sx, sy);
 }
 
@@ -676,7 +700,7 @@ function step(w) {
       for (const it of w.it) if (!it[6]) loose += 1;
       if (loose < LOOSE_MOST && w.it.length < ITEMS_MOST) {
         const a = draw01(w) * TAU, r = draw01(w) * w.R * 0.7, kind = Math.floor(draw01(w) * KINDS);
-        w.it.push([dcos(a) * r, dsin(a) * r, 0, 0, kind, -1, 0, DROP_STEPS, dcos(a + 1), dsin(a + 1), 0]);
+        w.it.push([dcos(a) * r, dsin(a) * r, 0, 0, kind, -1, 0, DROP_STEPS]);
       }
     }
   }
@@ -684,45 +708,28 @@ function step(w) {
 
   botLegs(w);
 
-  // Throws: the head lets go at the speed it was flying, with a flick on top.
+  // A throw only lets go of the chain: the head flies on at its own speed.
   for (const id of ids) {
     const d = w.p[id];
     if (!d.tq) continue;
     d.tq = 0;
     if (!d.al || d.wk < 0) continue;
-    const [hx, hy, hvx, hvy] = headOf(d);
-    const W = WEAPONS[d.wk];
-    const flick = 0.5 + 0.2 * Math.min(1, Math.abs(d.w) * W.L);
-    if (w.it.length < ITEMS_MOST) {
-      const it = [hx, hy, hvx * 1.2 + d.ux * flick, hvy * 1.2 + d.uy * flick, d.wk, id, 1, 0, d.ux, d.uy, d.w * 0.6 + 6];
-      const v = Math.sqrt(it[2] * it[2] + it[3] * it[3]);
-      if (v > 5) { it[2] = (it[2] / v) * 5; it[3] = (it[3] / v) * 5; }
-      w.it.push(it);
-    }
-    fx(w, 'throw', hx, hy, id, Math.min(9, Math.round(Math.sqrt(hvx * hvx + hvy * hvy) * 2)));
-    d.wk = -1;
-    d.w = 0;
+    fx(w, 'throw', d.hx, d.hy, id, Math.min(9, Math.round(Math.sqrt(d.hvx * d.hvx + d.hvy * d.hvy) * 2)));
+    letGo(w, d, 1, id);
     d.pk = w.n;
   }
 
   for (let s = 0; s < SUB; s++) physics(w, ids);
 
-  // Loose weapons slow down; a thrown one lands once it is slow enough. Nothing
-  // flies faster than VCAP, a knock included.
   for (const it of w.it) {
     if (it[7] > 0) continue;
-    const keep = it[6] ? THROW_KEEP : SLIDE_KEEP;
-    it[2] *= keep;
-    it[3] *= keep;
-    it[10] *= it[6] ? 0.97 : 0.8;
     const v = Math.sqrt(it[2] * it[2] + it[3] * it[3]);
-    if (v > 5) { it[2] = (it[2] / v) * 5; it[3] = (it[3] / v) * 5; }
+    if (v > HCAP) { it[2] = (it[2] / v) * HCAP; it[3] = (it[3] / v) * HCAP; }
     if (it[6] && v < LAND_V) { it[6] = 0; fx(w, 'land', it[0], it[1], it[4]); }
-    if (!it[6] && v < 0.01) { it[2] = it[3] = it[10] = 0; }
+    if (!it[6] && v < 0.01) it[2] = it[3] = 0;
   }
   for (const id of ids) {
     const d = w.p[id];
-    clampSpeed(d, VCAP);
     // Empty hands pick up whatever lies under them.
     if (!d.al || d.wk >= 0) continue;
     for (let i = 0; i < w.it.length; i++) {
@@ -731,10 +738,7 @@ function step(w) {
       const dx = it[0] - d.x, dy = it[1] - d.y, dd = dx * dx + dy * dy, m = PR + 0.04;
       if (dd >= m * m) continue;
       const dist = Math.sqrt(dd);
-      d.wk = it[4];
-      d.ux = dist > 1e-6 ? dx / dist : 1;
-      d.uy = dist > 1e-6 ? dy / dist : 0;
-      d.w = 0;
+      hold(d, it[4], dist > 1e-6 ? dx / dist : 1, dist > 1e-6 ? dy / dist : 0);
       w.it.splice(i, 1);
       fx(w, 'pick', d.x, d.y, id, d.wk);
       break;
@@ -750,7 +754,6 @@ const isId = (k) => /^-?\d{1,12}$/.test(k);
 const num = (v, lo, hi) => Number.isFinite(v) && v >= lo && v <= hi;
 const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 const BIG = 2147483647;
-const SPIN_MOST = CAP / 0.11 + 1;
 
 function tableOf(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -766,7 +769,7 @@ function tableOf(raw) {
     const d = raw.p[id];
     if (!isId(id) || !d || typeof d !== 'object') return null;
     if (!num(d.x, -1, 1) || !num(d.y, -1, 1) || !num(d.vx, -VCAP, VCAP) || !num(d.vy, -VCAP, VCAP)) return null;
-    if (!num(d.ux, -1.001, 1.001) || !num(d.uy, -1.001, 1.001) || !num(d.w, -SPIN_MOST, SPIN_MOST)) return null;
+    if (!num(d.hx, -1.5, 1.5) || !num(d.hy, -1.5, 1.5) || !num(d.hvx, -HCAP, HCAP) || !num(d.hvy, -HCAP, HCAP)) return null;
     if (inputOf([d.dx, d.dy, d.bs]) === null || !int(d.wk, -1, KINDS - 1)) return null;
     if (!int(d.hp, 0, HP) || !int(d.ar, 0, ARMOR)) return null;
     for (const k of ['al', 'tq']) if (d[k] !== 0 && d[k] !== 1) return null;
@@ -779,10 +782,9 @@ function tableOf(raw) {
   if (!Array.isArray(raw.it) || raw.it.length > ITEMS_MOST) return null;
   const it = [];
   for (const v of raw.it) {
-    if (!Array.isArray(v) || v.length !== 11) return null;
-    if (!num(v[0], -1, 1) || !num(v[1], -1, 1) || !num(v[2], -5, 5) || !num(v[3], -5, 5)) return null;
+    if (!Array.isArray(v) || v.length !== 8) return null;
+    if (!num(v[0], -1.5, 1.5) || !num(v[1], -1.5, 1.5) || !num(v[2], -HCAP, HCAP) || !num(v[3], -HCAP, HCAP)) return null;
     if (!int(v[4], 0, KINDS - 1) || !int(v[5], -BIG, BIG) || (v[6] !== 0 && v[6] !== 1) || !int(v[7], 0, DROP_STEPS)) return null;
-    if (!num(v[8], -1.001, 1.001) || !num(v[9], -1.001, 1.001) || !num(v[10], -60, 60)) return null;
     it.push(v.slice());
   }
   let res = null;
@@ -1286,69 +1288,134 @@ function drawHead(kind, x, y, ax, ay, way, colour, spin) {
   ctx.restore();
 }
 
-// The chain or haft from a fighter's body to its head. A slow chain sags away
-// from the way it turns; a fast one is drawn taut.
-function drawLink(kind, bx, by, hx, hy, way, spd, colour) {
+// ── chains on screen ───────────────────────────────────────────────────────
+// What a chain looks like between its two ends is not part of the arena: the
+// arena knows only where a body and a head are. Each copy hangs a light rope of
+// links between the two as it draws them, and lets that rope swing on a clock
+// of its own, so a slack chain sags and snakes after its head and a taut one
+// draws straight. It is the same on no two screens and decides nothing.
+const LINKS = 9;
+const ROPE_HZ = 120;
+const ropes = new Map();   // key -> { kind, p: [[x, y, px, py]], seen }
+let ropeClock = 0;
+
+function ropeOf(key, kind, ax, ay, bx, by) {
+  let r = ropes.get(key);
+  const far = r && Math.hypot(r.p[LINKS][0] - bx, r.p[LINKS][1] - by) > 0.2;
+  if (!r || r.kind !== kind || far) {
+    r = { kind, p: [], seen: 0 };
+    for (let i = 0; i <= LINKS; i++) {
+      const k = i / LINKS, x = ax + (bx - ax) * k, y = ay + (by - ay) * k;
+      r.p.push([x, y, x, y]);
+    }
+    ropes.set(key, r);
+  }
+  r.seen = performance.now();
+  return r;
+}
+
+// One tick of every rope: links coast on what they had, slowed by the floor,
+// then are pulled back to their lengths with both ends held where they are
+// drawn — or the far end alone, for a weapon nobody holds.
+function swingRopes(n) {
+  for (const r of ropes.values()) {
+    const W = WEAPONS[r.kind], seg = W.L / LINKS;
+    for (let s = 0; s < n; s++) {
+      for (let i = 0; i <= LINKS; i++) {
+        const q = r.p[i];
+        const vx = (q[0] - q[2]) * 0.93, vy = (q[1] - q[3]) * 0.93;
+        q[2] = q[0]; q[3] = q[1];
+        q[0] += vx; q[1] += vy;
+      }
+      for (let it = 0; it < 6; it++) {
+        if (r.a) { r.p[0][0] = r.a[0]; r.p[0][1] = r.a[1]; }
+        r.p[LINKS][0] = r.b[0]; r.p[LINKS][1] = r.b[1];
+        for (let i = 0; i < LINKS; i++) {
+          const a = r.p[i], b = r.p[i + 1];
+          const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.hypot(dx, dy) || 1e-9;
+          if (d <= seg) continue;
+          const k = (d - seg) / d / 2;
+          a[0] += dx * k; a[1] += dy * k;
+          b[0] -= dx * k; b[1] -= dy * k;
+        }
+      }
+      if (r.a) { r.p[0][0] = r.a[0]; r.p[0][1] = r.a[1]; }
+      r.p[LINKS][0] = r.b[0]; r.p[LINKS][1] = r.b[1];
+    }
+  }
+}
+
+// A chain drawn as links, each turned across the last, from a body (or a free
+// end) to its head; a haft is drawn straight. Returns the way the last link
+// points, which is the way the head hangs.
+function drawChain(key, kind, ax, ay, bx, by, held, colour) {
   const W = WEAPONS[kind];
-  const dx = hx - bx, dy = hy - by, l = Math.hypot(dx, dy) || 1;
-  const ux = dx / l, uy = dy / l;
-  const sx = bx + ux * PR * 0.8, sy = by + uy * PR * 0.8;
-  if (kind === 1) {
+  if (W.rigid && held) {
+    const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
+    const sx = ax + ux * PR * 0.7, sy = ay + uy * PR * 0.7;
     ctx.strokeStyle = INK.wood;
     ctx.lineWidth = 0.011;
     ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(hx, hy);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(bx, by); ctx.stroke();
     ctx.strokeStyle = colour;
     ctx.lineWidth = 0.013;
-    ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(sx + ux * 0.022, sy + uy * 0.022);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + ux * 0.022, sy + uy * 0.022); ctx.stroke();
     ctx.lineCap = 'butt';
-    return;
+    return [ux, uy];
   }
-  const sag = (W.L * 0.3) / (1 + spd * spd * 1.5);
-  const mx = (sx + hx) / 2 + uy * sag * way, my = (sy + hy) / 2 - ux * sag * way;
-  const n = Math.max(4, Math.round(W.L / 0.016));
-  ctx.fillStyle = kind === 3 ? '#8c92a6' : INK.steelDark;
-  for (let i = 1; i < n; i++) {
-    const k = i / n, a = (1 - k) * (1 - k), b = 2 * (1 - k) * k, c = k * k;
-    disc(a * sx + b * mx + c * hx, a * sy + b * my + c * hy, kind === 3 ? 0.0065 : 0.005);
+  const r = ropeOf(key, kind, ax, ay, bx, by);
+  r.a = held ? [ax, ay] : null;
+  r.b = [bx, by];
+  const p = r.p, w = kind === 3 ? 0.012 : 0.009;
+  ctx.lineWidth = kind === 3 ? 0.004 : 0.003;
+  for (let i = 0; i < LINKS; i++) {
+    const a = p[i], b = p[i + 1];
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy);
+    if (held && i === 0 && l < 1e-6) continue;
+    ctx.save();
+    ctx.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+    ctx.rotate(Math.atan2(dy, dx));
+    ctx.strokeStyle = i % 2 ? '#8a91a6' : '#b9c0d2';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, Math.max(0.004, l * 0.62), i % 2 ? w * 0.25 : w * 0.5, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (held) {
+    ctx.fillStyle = colour;
+    disc(ax, ay, 0.01);
     ctx.fill();
   }
-  ctx.fillStyle = colour;
-  disc(sx, sy, 0.009);
-  ctx.fill();
+  const a = p[LINKS - 1], b = p[LINKS], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  return l > 1e-6 ? [(b[0] - a[0]) / l, (b[1] - a[1]) / l] : [bx - ax, by - ay];
 }
 
-// A whirl leaves a fading arc behind its head, longer and brighter the faster
-// it goes, and red once it is fast enough to hurt.
-function drawTrail(bx, by, ax, ay, kind, wSpin, alpha) {
-  const W = WEAPONS[kind];
-  const spd = Math.abs(wSpin) * W.L;
-  if (spd < 0.5) return;
-  const a = Math.atan2(ay, ax), span = Math.min(2.2, Math.abs(wSpin) * 0.07);
-  const k = Math.min(1, (spd - 0.5) / (CAP - 0.5));
-  const hot = spd >= VMIN;
-  const steps = 6;
+// A head leaves a fading streak along the way it really went, kept from the
+// frames just drawn; it runs hot once the head flies fast enough to hurt.
+const streaks = new Map(); // key -> [[x, y, t, speed]]
+function drawStreak(key, x, y, speed, now) {
+  let s = streaks.get(key);
+  if (!s) streaks.set(key, (s = []));
+  s.push([x, y, now, speed]);
+  while (s.length && now - s[0][2] > 110) s.shift();
+  if (s.length < 2) return;
+  ctx.lineCap = 'round';
   ctx.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < steps; i++) {
-    const a0 = a - Math.sign(wSpin) * (span * i) / steps, a1 = a - Math.sign(wSpin) * (span * (i + 1)) / steps;
-    ctx.globalAlpha = alpha * (0.5 * k + 0.12) * (1 - i / steps);
-    ctx.strokeStyle = hot ? (spd > 2.4 ? '#ff8a5c' : '#ffd38a') : 'rgba(220,225,240,1)';
-    ctx.lineWidth = W.r * (1.6 - i * 0.18);
-    ctx.beginPath();
-    ctx.arc(bx, by, W.L, Math.min(a0, a1), Math.max(a0, a1));
-    ctx.stroke();
+  for (let i = 1; i < s.length; i++) {
+    const a = s[i - 1], b = s[i], v = b[3];
+    if (v < 0.6) continue;
+    const k = 1 - (now - b[2]) / 110;
+    ctx.globalAlpha = Math.max(0, k) * Math.min(0.75, 0.15 + v * 0.18);
+    ctx.strokeStyle = v >= VMIN ? (v > 2.6 ? '#ff8a5c' : '#ffd38a') : '#d8dcf0';
+    ctx.lineWidth = 0.01 + Math.min(0.03, v * 0.007) * k;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
   }
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
+  ctx.lineCap = 'butt';
 }
 
-function drawLoose(it, now) {
+function drawLoose(it, key, now) {
   const W = WEAPONS[it[4]];
   const f = it[7] / DROP_STEPS;
   const y = it[1] - f * 0.25;
@@ -1365,10 +1432,25 @@ function drawLoose(it, now) {
     ctx.stroke();
   }
   const owner = latest && latest.p[it[5]] ? SEAT[latest.p[it[5]].k] : '#c9c3dd';
-  const len = W.L * 0.55;
-  const tx = it[0] - it[8] * len, ty = y - it[9] * len;
-  drawLink(it[4], tx, ty, it[0], y, 1, it[6] ? 3 : 0, owner);
-  drawHead(it[4], it[0], y, it[8], it[9], 1, owner, now / 300);
+  const v = Math.hypot(it[2], it[3]);
+  if (it[6]) drawStreak(key, it[0], y, v, now);
+  // Whatever it trails, a chain or a haft, hangs back the way it came from.
+  const bx = v > 0.05 ? -it[2] / v : 0.7, by = v > 0.05 ? -it[3] / v : 0.7;
+  let dir;
+  if (W.rigid) {
+    const tx = it[0] + bx * W.L * 0.8, ty = y + by * W.L * 0.8;
+    ctx.strokeStyle = INK.wood;
+    ctx.lineWidth = 0.011;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(it[0], y); ctx.stroke();
+    ctx.lineCap = 'butt';
+    dir = [-bx, -by];
+  } else {
+    const r = ropes.get(key);
+    const tail = r && r.kind === it[4] ? r.p[0] : [it[0] + bx * W.L * 0.6, y + by * W.L * 0.6];
+    dir = drawChain(key, it[4], tail[0], tail[1], it[0], y, false, owner);
+  }
+  drawHead(it[4], it[0], y, dir[0], dir[1], 1, owner, now / 300);
 }
 
 function drawFighter(id, x, y, d, ux, uy, colour, me, now) {
@@ -1555,8 +1637,8 @@ function drawHud(t, now) {
   let how, hc = INK.muted;
   if (md && !md.al) { how = 'knocked out · drift about until the next round'; hc = INK.dim; }
   else if (md && md.wk < 0) { how = 'empty-handed · run over a weapon on the floor to pick it up'; hc = INK.gold; }
-  else how = coarse ? 'drag to run · run in circles to whirl it · turn hard to whip · tap to throw'
-    : 'WASD/arrows or hold the mouse to run · circle to whirl it · turn hard to whip · space/click throws · M mutes';
+  else how = coarse ? 'drag to run · run tight circles to whirl it · stop or turn hard to whip · tap lets go'
+    : 'WASD/arrows or hold the mouse to run · run tight circles to whirl it · stop to whip · space/click lets go · M mutes';
   fitText(how, VW / 2, VH - 10, 12, hc, VW - 20);
 }
 
@@ -1651,7 +1733,7 @@ function drawOverlay(t, now) {
   if (t.ph === WAIT) {
     const two = humans(t).length >= 2;
     const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
-    const tip = two ? null : 'run in circles to whirl your weapon up · hit the bot while it glows hot';
+    const tip = two ? null : 'run tight circles and the chain whirls the head up · hit the bot while it streaks hot';
     practiceNote(now, VW, head, tip, [[TOP, SY(-VIEW) - 4], [SY(VIEW) + 4, VH - BOT]], VH - BOT - 2);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
@@ -1696,44 +1778,46 @@ function drawOverlay(t, now) {
   }
 }
 
-// A fighter between two tables: a body, and the way its weapon hangs, walked
-// the short way round. One that has just gone down or come back, or changed
-// weapons, is drawn as the newer table has it rather than walked there.
+// A fighter between two tables: its body and its head, walked. One that has
+// just gone down or come back, or changed weapons, is drawn as the newer table
+// has it rather than walked there.
 function between(b, id) {
   const p = b.to.p[id], q = b.from.p[id];
   if (!p) return null;
-  if (!q || q.al !== p.al || q.wk !== p.wk) return { x: p.x, y: p.y, a: Math.atan2(p.uy, p.ux), w: p.w };
-  const a0 = Math.atan2(q.uy, q.ux), a1 = Math.atan2(p.uy, p.ux);
-  let da = a1 - a0;
-  da -= Math.PI * 2 * Math.round(da / (Math.PI * 2));
-  return { x: lerp(q.x, p.x, b.k), y: lerp(q.y, p.y, b.k), a: a0 + da * b.k, w: lerp(q.w, p.w, b.k) };
+  if (!q || q.al !== p.al || q.wk !== p.wk) return { x: p.x, y: p.y, hx: p.hx, hy: p.hy, hvx: p.hvx, hvy: p.hvy };
+  const k = b.k;
+  return {
+    x: lerp(q.x, p.x, k), y: lerp(q.y, p.y, k), hx: lerp(q.hx, p.hx, k), hy: lerp(q.hy, p.hy, k),
+    hvx: lerp(q.hvx, p.hvx, k), hvy: lerp(q.hvy, p.hvy, k),
+  };
 }
 
 // Your own fighter is drawn from the guess a trip ahead, eased toward it rather
 // than set on it, so a guess remade on every tick never shows as a twitch; a
-// guess far off — a table taken afresh — is taken at once. Its weapon is drawn
-// from the guess as it is, hung off the eased body.
+// guess far off — a table taken afresh — is taken at once. Its head is eased
+// the same way, by the same amount, so it keeps its place on the chain.
 let shown = null;
 const SNAP = 0.15;
-function settle(tx, ty, alive) {
-  if (!shown || shown[2] !== alive || (tx - shown[0]) ** 2 + (ty - shown[1]) ** 2 > SNAP * SNAP) return (shown = [tx, ty, alive]);
-  const k = per60(0.4);
-  shown[0] += (tx - shown[0]) * k;
-  shown[1] += (ty - shown[1]) * k;
+function settle(pos, alive) {
+  if (!shown || shown.al !== alive || (pos.x - shown.x) ** 2 + (pos.y - shown.y) ** 2 > SNAP * SNAP) {
+    return (shown = { al: alive, x: pos.x, y: pos.y, hx: pos.hx, hy: pos.hy });
+  }
+  const k = per60(0.45);
+  shown.x += (pos.x - shown.x) * k;
+  shown.y += (pos.y - shown.y) * k;
+  shown.hx += (pos.hx - shown.hx) * k;
+  shown.hy += (pos.hy - shown.hy) * k;
   return shown;
 }
 
-// The hum of your own weapon: a whoosh every half turn once it flies fast.
-let humAngle = null;
-function hum(a, spd) {
-  if (humAngle === null || spd < 1.2) { humAngle = a; return; }
-  let da = a - humAngle;
-  da -= Math.PI * 2 * Math.round(da / (Math.PI * 2));
-  if (Math.abs(da) > Math.PI * 0.9 || Math.abs(da) < 0.01) return;
-  if (Math.abs(da) >= Math.PI / 2) {
-    sound.whoosh(Math.min(1, (spd - 1.2) / (CAP - 1.2)));
-    humAngle = a;
-  }
+// The hum of your own weapon: a whoosh for every stretch of air the head
+// cuts through fast.
+let humFrom = null;
+function hum(x, y, spd) {
+  if (!humFrom || spd < 1.3) { humFrom = [x, y]; return; }
+  if (Math.hypot(x - humFrom[0], y - humFrom[1]) < 0.3) return;
+  humFrom = [x, y];
+  sound.whoosh(Math.min(1, (spd - 1.3) / 2.5));
 }
 
 let latest = null;     // the arena the drawing stands on, for things drawn outside `draw`
@@ -1741,27 +1825,25 @@ let myPos = null;      // [x, y]: where your fighter is drawn
 function drawArmed(id, pos, d, me, now) {
   const colour = SEAT[d.k];
   if (!d.al) { drawGhost(pos.x, pos.y, colour, me, now); return; }
-  if (d.wk >= 0) {
-    const W = WEAPONS[d.wk];
-    const ax = Math.cos(pos.a), ay = Math.sin(pos.a), spd = Math.abs(pos.w) * W.L;
-    const hx = pos.x + ax * W.L, hy = pos.y + ay * W.L;
-    drawTrail(pos.x, pos.y, ax, ay, d.wk, pos.w, 1);
-    drawLink(d.wk, pos.x, pos.y, hx, hy, pos.w >= 0 ? 1 : -1, spd, colour);
-    drawFighter(id, pos.x, pos.y, d, ax, ay, colour, me, now);
-    drawHead(d.wk, hx, hy, ax, ay, pos.w >= 0 ? 1 : -1, colour, pos.a * 0.5);
-    // Your own speed, as a ring round you: grey while it would only tap, hot
-    // once it would hurt.
-    if (me) {
-      const k = Math.min(1, spd / CAP);
-      ctx.strokeStyle = spd >= VMIN ? (spd > 2.4 ? '#ff8a5c' : INK.gold) : 'rgba(255,255,255,0.45)';
-      ctx.lineWidth = 0.006;
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, PR + 0.02, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0.001, k));
-      ctx.stroke();
-      hum(pos.a, spd);
-    }
-  } else {
-    drawFighter(id, pos.x, pos.y, d, 0, 1, colour, me, now);
+  if (d.wk < 0) { drawFighter(id, pos.x, pos.y, d, 0, 1, colour, me, now); return; }
+  const spd = Math.hypot(pos.hvx, pos.hvy);
+  drawStreak('p' + id, pos.hx, pos.hy, spd, now);
+  const hang = drawChain('p' + id, d.wk, pos.x, pos.y, pos.hx, pos.hy, true, colour);
+  const tx = pos.hx - pos.x, ty = pos.hy - pos.y;
+  const way = tx * (pos.hvy - d.vy) - ty * (pos.hvx - d.vx) >= 0 ? 1 : -1;
+  const hl = Math.hypot(tx, ty) || 1;
+  drawFighter(id, pos.x, pos.y, d, tx / hl, ty / hl, colour, me, now);
+  drawHead(d.wk, pos.hx, pos.hy, hang[0], hang[1], way, colour, Math.atan2(pos.hy, pos.hx) * 3);
+  // Your own head's speed, as a ring round you: grey while it would only
+  // shove, hot once it would hurt.
+  if (me) {
+    const k = Math.min(1, spd / 4);
+    ctx.strokeStyle = spd >= VMIN ? (spd > 2.6 ? '#ff8a5c' : INK.gold) : 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 0.006;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, PR + 0.02, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0.001, k));
+    ctx.stroke();
+    hum(pos.hx, pos.hy, spd);
   }
 }
 
@@ -1794,8 +1876,7 @@ function draw(now) {
   for (let i = 0; i < t.it.length; i++) {
     const c = t.it[i];
     const q = was[i] && was[i][4] === c[4] && was[i][5] === c[5] && was[i][7] >= c[7] ? was[i] : c;
-    const ix = lerp(q[0], c[0], b.k), iy = lerp(q[1], c[1], b.k);
-    drawLoose([ix, iy, c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10]], now);
+    drawLoose([lerp(q[0], c[0], b.k), lerp(q[1], c[1], b.k), c[2], c[3], c[4], c[5], c[6], c[7]], 'i' + i, now);
   }
   const me = myId();
   const ids = playersIn(t);
@@ -1804,8 +1885,8 @@ function draw(now) {
   if (m && m.to.p[me]) {
     const pos = between(m, me), d = m.to.p[me];
     if (pos) {
-      const s = settle(pos.x, pos.y, d.al);
-      mine = { d, pos: { x: s[0], y: s[1], a: pos.a, w: pos.w } };
+      const s = settle(pos, d.al);
+      mine = { d, pos: { x: s.x, y: s.y, hx: s.hx, hy: s.hy, hvx: pos.hvx, hvy: pos.hvy } };
     }
   }
   myPos = mine ? [mine.pos.x, mine.pos.y] : (shown = null);
@@ -1828,6 +1909,8 @@ function draw(now) {
     if (pos && d.al) fitText(nickOf(id), SX(pos.x), SY(pos.y) + PR * sc + 13, 11, INK.text, 90);
   }
   for (const [id, look] of looks) if (now - look.seen > 2000) looks.delete(id);
+  for (const [k, r] of ropes) if (now - r.seen > 500) ropes.delete(k);
+  for (const [k, s] of streaks) if (!s.length || now - s[s.length - 1][2] > 500) streaks.delete(k);
   drawBits();
   drawHud(t, now);
   drawOverlay(t, now);
@@ -2018,6 +2101,9 @@ function frame(now) {
   const steps = Math.min(8, Math.floor((now - bitsClock) / (1000 / BIT_HZ)));
   if (steps > 0) { moveBits(steps); bitsClock += steps * (1000 / BIT_HZ); }
   if (now - bitsClock > 1000) bitsClock = now;
+  const swings = Math.min(6, Math.floor((now - ropeClock) / (1000 / ROPE_HZ)));
+  if (swings > 0) { swingRopes(swings); ropeClock += swings * (1000 / ROPE_HZ); }
+  if (now - ropeClock > 1000) ropeClock = now;
   steerToMouse();
   sayHand(now);
   try { draw(now); } catch (err) {
