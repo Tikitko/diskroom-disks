@@ -198,11 +198,3 @@ own three-by-three box and passes the rest on. Every dish scores by where it
 sits: salmon apart, tempura in clumps, pickles in corners, tamago in lines,
 rice beside different dishes, mochi saved for the end. Whoever trails gets a
 middle compartment that counts double. (Sushi Go with a grid.)
-
-### grapple
-
-A realtime climb in lockstep for 2-8 players. Everyone swings up a volcano
-shaft on a grappling hook while the lava rises: grab a crystal, let go at the
-top of the swing to fly to the next one. Crystals crack if you hang on too
-long, and a hard swing into a rival knocks them off their rope and steals a
-gem.
