@@ -1,9 +1,9 @@
 /**
  * @disk     scribble
  * @author   diskroom
- * @version  5
+ * @version  6
  * @players  1-8
- * @about    A shared page to draw on. Every stroke lands on everyone else's canvas, nobody is in charge, and whoever already has ink catches a latecomer up.
+ * @about    A shared page to draw on. Every stroke lands on everyone else's canvas, nobody is in charge, and one player who already has the ink catches a latecomer up.
  * @tags     toy, drawing, canvas, example
  * @image    https://storage.tikitko.dev/diskroom/disks/thumbnails/scribble.png
  */
@@ -12,8 +12,8 @@
 // tag.js gives one seat the last word on a catch, because two players can
 // claim the same one. Here there is nothing to claim: a stroke never collides
 // with another stroke, so whoever already holds the ink can hand it to a
-// newcomer, and two players answering the same 'hello' is harmless — the runs
-// they send carry the same ids.
+// newcomer — any one of them, since every copy holds the same strokes under the
+// same ids, and a run that arrives twice finds its points already in place.
 
 // ── layout ───────────────────────────────────────────────────────────────
 document.documentElement.style.cssText = 'height:100%';
@@ -401,20 +401,71 @@ function flush() {
 // enough to empty the platform's burst allowance has everything past it
 // dropped without a word, and the newcomer is left holding half a drawing with
 // no error to explain it.
+//
+// And one player hands it over, not everybody who holds it. Every copy carries
+// the same ink, so a second answer is the same canvas sent again — and a full
+// room all answering one newcomer at once spends the room's shared byte
+// ceiling several times over, which drops the tail of every answer, the one
+// that mattered included.
 const catchUp = [];
+let lastTo = null;         // whom the last chunk went to
 
 function queueCatchUp(to) {
   for (const chunk of buildSyncChunks()) catchUp.push({ to, s: chunk });
+  catchUp.push({ to, done: true });
+}
+
+function say(msg, to) {
+  try { room.send(msg, { to }); } catch (e) { /* they have left; whoever asked moves on */ }
+}
+
+// The newcomer's side: one player asked at a time, in the room's order — the
+// host first, who has been here longest. A player with nothing to give, or
+// still being caught up themselves and so holding only part of the page, says
+// so and the next one is asked. One who falls silent half-way, or leaves, is
+// passed over the same way, and what the next one sends lands on the points
+// already held.
+const ASK_WAIT = 2000;     // ms of silence from the one asked before asking the next
+const asked = new Set();
+let asking = null;         // the id of the player handing the page over, while one is
+let heardAt = 0;
+let settled = false;       // this page holds the room's ink: caught up, or there was none
+
+function askNext() {
+  asking = null;
+  const next = room.me && room.players.find((p) => p.id !== myId() && !asked.has(p.id));
+  if (!next) {
+    settled = true;
+    return;
+  }
+  asked.add(next.id);
+  asking = next.id;
+  heardAt = performance.now();
+  say({ t: 'hello' }, next.id);
 }
 
 setInterval(() => {
   flush();
   // One chunk a tick — twenty a second, which alongside `flush` above stays
-  // clear of the platform's ceiling even while this player is drawing.
-  const next = catchUp.shift();
-  if (next) room.send({ t: 'sync', e: epoch, s: next.s }, { to: next.to });
+  // clear of the platform's ceiling even while this player is drawing. Taken
+  // in turn among those waiting rather than one newcomer's page after
+  // another's: the second in line would otherwise hear nothing for as long as
+  // the first page takes, give this player up for gone, and ask somebody else
+  // to send the whole page again.
+  const turn = catchUp.findIndex((c) => c.to !== lastTo);
+  const next = catchUp.splice(turn >= 0 ? turn : 0, 1)[0];
+  if (next) {
+    lastTo = next.to;
+    say(next.done ? { t: 'synced' } : { t: 'sync', e: epoch, s: next.s }, next.to);
+  }
+  if (asking !== null && performance.now() - heardAt > ASK_WAIT) askNext();
   prune();
 }, 50);
+
+room.on('leave', (p) => {
+  for (let i = catchUp.length - 1; i >= 0; i--) if (catchUp[i].to === p.id) catchUp.splice(i, 1);
+  if (p.id === asking) askNext();
+});
 
 // ── network in ───────────────────────────────────────────────────────────
 // `o` is the place of the run's first point inside its stroke, so a stroke too
@@ -473,20 +524,26 @@ room.on('message', (from, msg) => {
       wipe();
     }
   } else if (msg.t === 'hello') {
-    // Nothing is ever replayed by the platform, so whoever already has ink
-    // hands it over. Several players may all answer at once; that is fine,
-    // every point goes to its place and a repeat finds it taken.
-    if (order.length) queueCatchUp(from);
+    // Nothing is ever replayed by the platform, so a player who holds the
+    // page hands it over; one who does not says so, and is passed over.
+    if (settled && order.length) queueCatchUp(from);
+    else say({ t: 'none' }, from);
   } else if (msg.t === 'sync') {
+    if (from === asking) heardAt = performance.now();
     if (!current(msg.e) || !Array.isArray(msg.s)) return;
     for (const run of msg.s) {
       if (!run || !runOf(run.id, run.o, run.p)) continue;
       place(strokeOf(run.id, run.c, run.w), run.o, run.p);
     }
     prune();
+  } else if (msg.t === 'synced' && from === asking) {
+    asking = null;
+    settled = true;
+  } else if (msg.t === 'none' && from === asking) {
+    askNext();
   }
 });
 
-// Ask the room to catch us up. In the studio's "Test locally" there is no
-// room and this goes nowhere, which is fine — the canvas just starts blank.
-room.send({ t: 'hello' });
+// Ask the room to catch us up. Outside a room — the studio's "Test locally",
+// a disk's own "Run solo" — there is nobody to ask, and the canvas starts blank.
+askNext();
