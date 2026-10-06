@@ -2211,6 +2211,14 @@ const unticked = [];                     // my hands handed back, waiting for th
 const lags = [];                         // hand to agreed table, ms — kept for a check to read
 let lagMs = null;
 let tripMs = null;                       // hand to its own echo, ms
+// Steps the guess is moved by, learned from where my hands actually land. The
+// steady clock settles on the earliest ticks, so on a wire whose delay jumps it
+// runs ahead of the table most ticks arrive at, and the trip on top of it puts
+// every hand a step or three later than the room does — my piece snapping back
+// each time the truth arrives. Each hand that comes back says by how much.
+let guessOff = 0;
+const GUESS_LEARN = 0.2;                 // how much of one hand's miss moves the guess
+const GUESS_MISS = 3;                    // the most steps one hand's miss counts for
 let echoAt = null;                       // when something this copy sent last came back to it
 const ECHO_LOST = 3000;                  // ms without an echo that mean echoes are not coming back
 
@@ -2343,6 +2351,11 @@ function heardMine(seq) {
     const trip = now - h.at;
     tripMs = tripMs === null ? trip : tripMs * 0.8 + trip * 0.2;
     if (h.measured) unticked.push(h);
+    if (h.clocked && world) {
+      // It lands at the table as it stands now, and steps on from there.
+      const miss = Math.max(-GUESS_MISS, Math.min(GUESS_MISS, world.n - h.step));
+      guessOff = Math.max(-GUESS_REACH, Math.min(GUESS_REACH, guessOff + miss * GUESS_LEARN));
+    }
   }
 }
 
@@ -2483,12 +2496,15 @@ function sendHand(measured) {
   // the measured trip rather than off the last table and a rounded reach. A
   // guess that puts a turn one step early or late is a piece that snaps a step
   // when the truth arrives, and on a board of coarse steps that is a whole cell.
+  // Only a hand placed off the clock, after a tick has set it, teaches the
+  // guess anything: one placed without it was never the guess's to miss.
+  const clocked = !!world && stepClock !== null && !stepClockGuessed && tripMs !== null;
   const at = world
     ? stepClock !== null && tripMs !== null
-      ? Math.max(world.n, Math.floor(stepNow(performance.now()) + tripMs / STEP_MS))
+      ? Math.max(world.n, Math.floor(stepNow(performance.now()) + tripMs / STEP_MS + guessOff))
       : world.n + aheadSteps()
     : 0;
-  unheard.push({ seq: inSeq, at: performance.now(), step: at, input: myHand, measured });
+  unheard.push({ seq: inSeq, at: performance.now(), step: at, input: myHand, measured, clocked });
   if (unheard.length > 64) unheard.shift();
   emitRoom({ t: 'in', s: inSeq, i: myHand });
 }
@@ -2526,7 +2542,9 @@ function aheadSteps() {
   if (!PREDICT || solo() || tripMs === null) return 0;
   // Moved only when the trip has moved a whole step: a guess that flips
   // between two reaches jumps everything it draws back and forth by a step.
-  const want = Math.min(GUESS_REACH, tripMs / STEP_MS);
+  // The piece is drawn as far ahead as its hands land: drawn any further, a
+  // hand lands in what is already on screen and the piece jumps as it is made.
+  const want = Math.max(0, Math.min(GUESS_REACH, tripMs / STEP_MS + guessOff));
   if (Math.abs(want - reach) >= 1) reach = Math.round(want);
   return reach;
 }
