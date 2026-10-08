@@ -1299,10 +1299,20 @@ const ROPE_HZ = 120;
 const ropes = new Map();   // key -> { kind, p: [[x, y, px, py]], seen }
 let ropeClock = 0;
 
-function ropeOf(key, kind, ax, ay, bx, by) {
+// A rope keeps hanging only while its ends move as fast as they really go
+// (`spd`, a second) in the time since it was last drawn. One whose end has
+// gone further — a fighter set down somewhere new for a round, a table taken
+// afresh — hangs afresh: the rope that stayed would whip across the floor to
+// catch up with it.
+function ropeOf(key, kind, ax, ay, bx, by, held, spd) {
   let r = ropes.get(key);
-  const far = r && Math.hypot(r.p[LINKS][0] - bx, r.p[LINKS][1] - by) > 0.2;
-  if (!r || r.kind !== kind || far) {
+  if (r) {
+    const reach = 0.06 + (spd * 2 * (performance.now() - r.seen)) / 1000;
+    const jump = Math.hypot(r.p[LINKS][0] - bx, r.p[LINKS][1] - by);
+    const pull = held && r.a ? Math.hypot(r.a[0] - ax, r.a[1] - ay) : 0;
+    if (r.kind !== kind || jump > reach || pull > reach) r = null;
+  }
+  if (!r) {
     r = { kind, p: [], seen: 0 };
     for (let i = 0; i <= LINKS; i++) {
       const k = i / LINKS, x = ax + (bx - ax) * k, y = ay + (by - ay) * k;
@@ -1348,7 +1358,7 @@ function swingRopes(n) {
 // A chain drawn as links, each turned across the last, from a body (or a free
 // end) to its head; a haft is drawn straight. Returns the way the last link
 // points, which is the way the head hangs.
-function drawChain(key, kind, ax, ay, bx, by, held, colour) {
+function drawChain(key, kind, ax, ay, bx, by, held, colour, spd) {
   const W = WEAPONS[kind];
   if (W.rigid && held) {
     const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
@@ -1363,7 +1373,7 @@ function drawChain(key, kind, ax, ay, bx, by, held, colour) {
     ctx.lineCap = 'butt';
     return [ux, uy];
   }
-  const r = ropeOf(key, kind, ax, ay, bx, by);
+  const r = ropeOf(key, kind, ax, ay, bx, by, held, spd);
   r.a = held ? [ax, ay] : null;
   r.b = [bx, by];
   const p = r.p, w = kind === 3 ? 0.012 : 0.009;
@@ -1415,6 +1425,50 @@ function drawStreak(key, x, y, speed, now) {
   ctx.lineCap = 'butt';
 }
 
+// A weapon nobody holds is known on screen by where it was drawn last, never
+// by its place in the arena's list: the list closes up whenever one is picked
+// up, and a rope or a streak kept by place would jump to the weapon that
+// moved into it. Each weapon takes the nearest of its kind that could have got
+// to where it is since — one drawn lying about, or the head of a fighter who
+// no longer holds it, so a weapon thrown or dropped keeps the chain it swung
+// on — and only one nobody could have become is new.
+const inHand = new Map();  // id -> { kind, x, y, at }: each fighter's head as last drawn
+let lying = [];            // [{ key, kind, x, y, at }]: the weapons nobody holds, as last drawn
+let lyingSerial = 0;
+function lyingKeys(items, t, now) {
+  const from = lying.map((o) => ({ ...o, was: null }));
+  for (const [id, o] of inHand) {
+    const d = t.p[id];
+    if (!d || !d.al || d.wk !== o.kind) from.push({ ...o, key: 'p' + id, was: id });
+  }
+  const pairs = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i], v = Math.hypot(it[2], it[3]);
+    for (let j = 0; j < from.length; j++) {
+      const o = from[j];
+      if (o.kind !== it[4]) continue;
+      const dist = Math.hypot(o.x - it[0], o.y - it[1]);
+      if (dist <= 0.03 + (v * 2 * (now - o.at)) / 1000) pairs.push([dist, i, j]);
+    }
+  }
+  pairs.sort((a, b) => a[0] - b[0]);
+  const keys = items.map(() => null), taken = new Set();
+  for (const [, i, j] of pairs) {
+    if (keys[i] !== null || taken.has(j)) continue;
+    taken.add(j);
+    const o = from[j];
+    if (o.was === null) { keys[i] = o.key; continue; }
+    keys[i] = 'w' + ++lyingSerial;
+    inHand.delete(o.was);
+    for (const kept of [ropes, streaks]) {
+      if (kept.has(o.key)) { kept.set(keys[i], kept.get(o.key)); kept.delete(o.key); }
+    }
+  }
+  for (let i = 0; i < items.length; i++) if (keys[i] === null) keys[i] = 'w' + ++lyingSerial;
+  lying = items.map((it, i) => ({ key: keys[i], kind: it[4], x: it[0], y: it[1], at: now }));
+  return keys;
+}
+
 function drawLoose(it, key, now) {
   const W = WEAPONS[it[4]];
   const f = it[7] / DROP_STEPS;
@@ -1448,7 +1502,7 @@ function drawLoose(it, key, now) {
   } else {
     const r = ropes.get(key);
     const tail = r && r.kind === it[4] ? r.p[0] : [it[0] + bx * W.L * 0.6, y + by * W.L * 0.6];
-    dir = drawChain(key, it[4], tail[0], tail[1], it[0], y, false, owner);
+    dir = drawChain(key, it[4], tail[0], tail[1], it[0], y, false, owner, v + (it[7] ? (0.25 * HZ) / DROP_STEPS : 0));
   }
   drawHead(it[4], it[0], y, dir[0], dir[1], 1, owner, now / 300);
 }
@@ -1828,7 +1882,8 @@ function drawArmed(id, pos, d, me, now) {
   if (d.wk < 0) { drawFighter(id, pos.x, pos.y, d, 0, 1, colour, me, now); return; }
   const spd = Math.hypot(pos.hvx, pos.hvy);
   drawStreak('p' + id, pos.hx, pos.hy, spd, now);
-  const hang = drawChain('p' + id, d.wk, pos.x, pos.y, pos.hx, pos.hy, true, colour);
+  inHand.set(id, { kind: d.wk, x: pos.hx, y: pos.hy, at: now });
+  const hang = drawChain('p' + id, d.wk, pos.x, pos.y, pos.hx, pos.hy, true, colour, Math.max(spd, Math.hypot(d.vx, d.vy)));
   const tx = pos.hx - pos.x, ty = pos.hy - pos.y;
   const way = tx * (pos.hvy - d.vy) - ty * (pos.hvx - d.vx) >= 0 ? 1 : -1;
   const hl = Math.hypot(tx, ty) || 1;
@@ -1870,14 +1925,26 @@ function draw(now) {
   const R = lerp(b.from.R, t.R, b.k);
   drawArena(R, now);
   inField();
-  // Weapons on the floor and in the air: a weapon is walked between tables
-  // only while the same one stands at the same place in the list.
-  const was = b.from.it;
-  for (let i = 0; i < t.it.length; i++) {
+  // Weapons on the floor and in the air. The list loses weapons from its middle
+  // as they are picked up and gains them at its end, so a weapon is walked
+  // between tables from the nearest one like it further along the list than
+  // the last one found, and only from one it could have flown from since.
+  const was = b.from.it, gap = (HCAP * (t.n - b.from.n)) / HZ;
+  const items = [];
+  for (let i = 0, j = 0; i < t.it.length; i++) {
     const c = t.it[i];
-    const q = was[i] && was[i][4] === c[4] && was[i][5] === c[5] && was[i][7] >= c[7] ? was[i] : c;
-    drawLoose([lerp(q[0], c[0], b.k), lerp(q[1], c[1], b.k), c[2], c[3], c[4], c[5], c[6], c[7]], 'i' + i, now);
+    let q = c, at = -1, best = gap + 1e-6;
+    for (let k = j; k < was.length; k++) {
+      const o = was[k];
+      if (o[4] !== c[4] || o[5] !== c[5] || o[7] < c[7]) continue;
+      const dist = Math.hypot(o[0] - c[0], o[1] - c[1]);
+      if (dist < best) { best = dist; q = o; at = k; }
+    }
+    if (at >= 0) j = at + 1;
+    items.push([lerp(q[0], c[0], b.k), lerp(q[1], c[1], b.k), c[2], c[3], c[4], c[5], c[6], c[7]]);
   }
+  const keys = lyingKeys(items, t, now);
+  for (let i = 0; i < items.length; i++) drawLoose(items[i], keys[i], now);
   const me = myId();
   const ids = playersIn(t);
   let mine = null;
@@ -1910,6 +1977,7 @@ function draw(now) {
   }
   for (const [id, look] of looks) if (now - look.seen > 2000) looks.delete(id);
   for (const [k, r] of ropes) if (now - r.seen > 500) ropes.delete(k);
+  for (const [id, o] of inHand) if (now - o.at > 500) inHand.delete(id);
   for (const [k, s] of streaks) if (!s.length || now - s[s.length - 1][2] > 500) streaks.delete(k);
   drawBits();
   drawHud(t, now);
