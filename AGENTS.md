@@ -31,6 +31,11 @@ references: host-run `quiz.js`, `scribble.js`, `hang.js`, `outbid.js`,
 - A new mechanic, not a reskin. Two players or more, rounds of a few minutes.
 - Worth playing, not a tech demo: no bare clones of tic-tac-toe,
   rock-paper-scissors, click races or "move a square".
+- Few card games. The owner wants fewer of them: a deck, a hand, tricks,
+  bids, a pot passed round the table. Prefer a realtime lockstep game or a
+  board, party or drawing game, and write a card game only when the idea
+  cannot work without cards and nothing like it is here, on the shelf or
+  rejected — never two runs in a row.
 - Before writing code, write down the hook in one sentence, the real decision
   players make every few seconds, what creates tension (escalation, a
   shrinking arena, a timer, risk and reward), what keeps a losing player in
@@ -198,3 +203,29 @@ own three-by-three box and passes the rest on. Every dish scores by where it
 sits: salmon apart, tempura in clumps, pickles in corners, tamago in lines,
 rice beside different dishes, mochi saved for the end. Whoever trails gets a
 middle compartment that counts double. (Sushi Go with a grid.)
+
+### fission
+
+A chain-reaction board game for 2-8 players, run by the host. Players take
+turns dropping an orb into an empty cell or one of their own. A cell holding
+as many orbs as it has neighbours bursts, sends an orb into each of them and
+takes them over in its owner's colour, and a neighbour that fills up bursts in
+turn. Every game is laid on a new floor with holes in it. The last colour left
+wins. (Chain Reaction / Atoms.)
+
+### jinx
+
+A pay-or-take card game for 2-8 players, run by the host. Numbered cursed
+idols are turned up one at a time, with a few set aside unseen. Whoever's
+turn it is pays a coin onto the idol to pass it on, or takes it with every
+coin piled on it. An idol counts its number against its holder, an unbroken
+run counts only its lowest, and the leader pays two to pass. Least bad luck
+wins. (No Thanks!.)
+
+### promise
+
+An exact-bid trick-taking card game for 2-8 players, run by the host. Each
+hand is one card bigger than the last, with a trump turned up. Everyone
+promises exactly how many tricks they will take, the dealer may not make the
+promises add up, and only a promise kept to the trick scores. Whoever trails
+is dealt a spare card to throw away. (Oh Hell / Contract Whist.)
