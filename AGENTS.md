@@ -159,10 +159,16 @@ above, does playing alone work as above? Fix what you find.
 ## The thumbnail
 
 `thumbnails/<snake_name>.png`, 182×96, in the style of the ones already there
-(open two or three first): a dark background, a thin rounded frame, flat
-colours, a still frame of this game that makes somebody want to click it.
+(open `glint.png`, `slipstream.png` and `conga.png` first, not just the newest
+ones): a dark background, a thin rounded frame, flat colours, a still frame of
+this game that makes somebody want to click it.
 Drawn with a throwaway script, which is not committed; the PNG is not
 uploaded anywhere — the owner does that by hand.
+
+No title and no description on the picture: not the game's name, not a
+tagline, not a how-to line. The library already shows the name and `@about`
+beside it. The scene fills the frame. The only words allowed are the ones the
+game itself pops up as an effect: `boom!`, `hop!`, `snip!`, `+10`, `-24`.
 
 ## Rejected games
 
@@ -229,3 +235,12 @@ hand is one card bigger than the last, with a trump turned up. Everyone
 promises exactly how many tricks they will take, the dealer may not make the
 promises add up, and only a promise kept to the trick scores. Whoever trails
 is dealt a spare card to throw away. (Oh Hell / Contract Whist.)
+
+### plunge
+
+A realtime race down one shared well for 2-8 players, in lockstep. The well
+is packed with coloured blocks. Drilling a block clears its whole patch of
+the same colour at once, and whatever it held up shakes and then falls on
+whoever is below. Air runs out on the way down, air capsules refill it and
+stone is slow to drill. A driller far behind gets a turbo drill. First to the
+bottom wins. (Mr. Driller as a race.)
