@@ -229,3 +229,12 @@ hand is one card bigger than the last, with a trump turned up. Everyone
 promises exactly how many tricks they will take, the dealer may not make the
 promises add up, and only a promise kept to the trick scores. Whoever trails
 is dealt a spare card to throw away. (Oh Hell / Contract Whist.)
+
+### plunge
+
+A realtime race down one shared well for 2-8 players, in lockstep. The well
+is packed with coloured blocks. Drilling a block clears its whole patch of
+the same colour at once, and whatever it held up shakes and then falls on
+whoever is below. Air runs out on the way down, air capsules refill it and
+stone is slow to drill. A driller far behind gets a turbo drill. First to the
+bottom wins. (Mr. Driller as a race.)
