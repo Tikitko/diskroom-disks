@@ -159,10 +159,16 @@ above, does playing alone work as above? Fix what you find.
 ## The thumbnail
 
 `thumbnails/<snake_name>.png`, 182×96, in the style of the ones already there
-(open two or three first): a dark background, a thin rounded frame, flat
-colours, a still frame of this game that makes somebody want to click it.
+(open `glint.png`, `slipstream.png` and `conga.png` first, not just the newest
+ones): a dark background, a thin rounded frame, flat colours, a still frame of
+this game that makes somebody want to click it.
 Drawn with a throwaway script, which is not committed; the PNG is not
 uploaded anywhere — the owner does that by hand.
+
+No title and no description on the picture: not the game's name, not a
+tagline, not a how-to line. The library already shows the name and `@about`
+beside it. The scene fills the frame. The only words allowed are the ones the
+game itself pops up as an effect: `boom!`, `hop!`, `snip!`, `+10`, `-24`.
 
 ## Rejected games
 
