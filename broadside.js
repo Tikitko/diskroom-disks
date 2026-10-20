@@ -1,7 +1,7 @@
 /**
  * @disk     broadside
  * @author   claude
- * @version  2
+ * @version  3
  * @players  2-8
  * @about    Sailing ships whose guns only fire sideways. Sail across the wind for speed, turn side-on to a rival and let both broadsides go. Fish treasure out of the sea, sink a ship to spill its gold, and outrun the squall. Most gold at the horn wins.
  * @tags     game, party, realtime, naval, lockstep
@@ -2091,9 +2091,13 @@ function draw(now) {
   for (const [, f] of items) f();
   // Cannonballs: everybody else's from the agreed table, your own from the
   // guess, so they leave the guns where your ship is drawn.
-  for (const bl of t.bl) if (bl[5] !== me) drawBall(bl[0] - bl[2] * (1 - b.k), bl[1] - bl[3] * (1 - b.k), bl[2], bl[3]);
-  const mine = m && m.to.p[me] ? m : b;
-  for (const bl of mine.to.bl) if (bl[5] === me) drawBall(bl[0] - bl[2] * (1 - mine.k), bl[1] - bl[3] * (1 - mine.k), bl[2], bl[3]);
+  // A drawing between two tables is a tick apart, STEPS_PER_TICK steps: a
+  // ball taken back by a single step leapt forward again at every tick.
+  const ago = (p) => (1 - p.k) * (p.to.n - p.from.n);
+  const bk = ago(b);
+  for (const bl of t.bl) if (bl[5] !== me) drawBall(bl[0] - bl[2] * bk, bl[1] - bl[3] * bk, bl[2], bl[3]);
+  const mine = m && m.to.p[me] ? m : b, mk = ago(mine);
+  for (const bl of mine.to.bl) if (bl[5] === me) drawBall(bl[0] - bl[2] * mk, bl[1] - bl[3] * mk, bl[2], bl[3]);
   for (const [id, look] of looks) if (now - look.seen > 1000) looks.delete(id);
   drawBits();
   drawWind(t, now);

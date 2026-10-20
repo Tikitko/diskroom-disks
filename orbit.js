@@ -1,7 +1,7 @@
 /**
  * @disk     orbit
  * @author   claude
- * @version  2
+ * @version  3
  * @players  2-8
  * @about    Little ships circling one sun. Burn back to drop into a lower, faster orbit and catch what is ahead, burn forward to climb. Scoop up stardust, ram a slower ship to knock its dust loose, and refuel close to the sun without touching it.
  * @tags     game, party, realtime, space, lockstep
@@ -1241,9 +1241,13 @@ function drawSun(t, now) {
 // Stardust: a soft glint, golden when it is worth double; a comet a bright
 // head with a tail streaming away from the sun; dust shed in a crash glints in
 // the colour of nobody, and blinks as it is about to run out.
-function drawDust(s, k, now, i) {
+// `back` is how far before its table's moment the grain is drawn, in
+// seconds: it is taken back along its fall, the pull of the sun included,
+// because a grain close in curves too much in a tick to be slid back straight.
+function drawDust(s, back, now, i) {
   if (s[5] < 3 * HZ && Math.floor(now / 140) % 2 === 0) return;
-  const x = SX(s[0] - s[2] * DT * (1 - k)), y = SY(s[1] - s[3] * DT * (1 - k));
+  const r2 = s[0] * s[0] + s[1] * s[1], g = GM / Math.max(1e-6, r2 * Math.sqrt(r2)) * 0.5 * back * back;
+  const x = SX(s[0] - s[2] * back - s[0] * g), y = SY(s[1] - s[3] * back - s[1] * g);
   const colour = s[6] === COMET ? INK.comet : s[4] >= 2 ? INK.gold : INK.dust;
   if (s[6] === COMET) {
     const [ux, uy] = unit(s[0], s[1]);
@@ -1300,24 +1304,65 @@ function drawPath(x, y, d, sr, colour) {
   }
   const [h, ex, ey] = shape;
   const p = (h * h) / GM, e = Math.hypot(ex, ey), w0 = Math.atan2(ey, ex), dir = h >= 0 ? 1 : -1;
-  const pts = [];
-  let end = 0, last = null, run = 0;
-  const th0 = Math.atan2(y, x);
-  for (let i = 0; i <= 700; i++) {
-    const th = th0 + dir * i * 0.009;
+  // The dots are laid along the orbit a fixed distance apart, counted from a
+  // point that stays put on it — where a closed orbit crosses the line right
+  // of the sun, the near point of an open one — so they hold still while the
+  // ship slides past them. Counted from the ship, they were a step of the
+  // walk out from wherever it was, and hopped to and fro by that step.
+  const TAU = Math.PI * 2, STEP = 0.004, FAR = 3.3;
+  const pointAt = (th) => {
     const q = 1 + e * Math.cos(th - w0);
-    if (q <= 0.02) { end = 2; break; }
+    if (q <= 0.02) return null;
     const r = p / q;
-    if (r < sr) { end = 1; break; }
-    if (r > LOST_R) { end = 2; break; }
-    const px = r * Math.cos(th), py = r * Math.sin(th);
-    if (last) run += Math.hypot(px - last[0], py - last[1]);
-    last = [px, py];
-    if (i === 0 || run >= 0.03) { pts.push([px, py]); run = 0; }
-    if (pts.length >= 110) break;
+    return [r * Math.cos(th), r * Math.sin(th), r];
+  };
+  // Round a closed orbit the count starts over each time the ship passes the
+  // fixed point, so the gap is the one nearest 0.03 that goes into the whole
+  // way round a whole number of times.
+  let GAP = 0.03;
+  if (e < 1) {
+    let c = 0, a = pointAt(0);
+    for (let i = 1; i <= Math.ceil(TAU / STEP); i++) {
+      const b = pointAt((TAU * i) / Math.ceil(TAU / STEP));
+      if (!a || !b) break;
+      c += Math.hypot(b[0] - a[0], b[1] - a[1]);
+      a = b;
+    }
+    GAP = c / Math.max(1, Math.round(c / 0.03));
+  }
+  const th0 = Math.atan2(y, x), anchor = e < 1 ? 0 : w0;
+  let rel = dir * (th0 - anchor);
+  rel = e < 1 ? ((rel % TAU) + TAU) % TAU : Math.atan2(Math.sin(rel), Math.cos(rel));
+  let s0 = 0;
+  {
+    const n = Math.max(1, Math.ceil(Math.abs(rel) / STEP)), st = rel / n;
+    let prev = pointAt(anchor);
+    for (let i = 1; i <= n && prev; i++) {
+      const q = pointAt(anchor + dir * st * i);
+      if (!q) break;
+      s0 += Math.sign(st) * Math.hypot(q[0] - prev[0], q[1] - prev[1]);
+      prev = q;
+    }
+  }
+  const pts = [];
+  let end = 0, prev = pointAt(th0), run = s0;
+  for (let i = 1; prev && i <= Math.ceil(TAU / STEP); i++) {
+    const q = pointAt(th0 + dir * STEP * i);
+    if (!q) { end = 2; break; }
+    if (q[2] < sr) { end = 1; break; }
+    if (q[2] > LOST_R) { end = 2; break; }
+    const seg = Math.hypot(q[0] - prev[0], q[1] - prev[1]);
+    // Every multiple of GAP passed on this stretch is a dot, where it falls.
+    for (let m = Math.floor(run / GAP) + 1; m * GAP <= run + seg; m++) {
+      const f = seg > 0 ? (m * GAP - run) / seg : 0;
+      pts.push([prev[0] + (q[0] - prev[0]) * f, prev[1] + (q[1] - prev[1]) * f, m * GAP - s0]);
+    }
+    run += seg;
+    prev = q;
+    if (run - s0 >= FAR) break;
   }
   for (let i = 0; i < pts.length; i++) {
-    const a = 0.55 * (1 - i / pts.length);
+    const a = 0.55 * Math.max(0, 1 - pts[i][2] / FAR);
     ctx.fillStyle = end && i > pts.length - 12 ? `rgba(255,90,110,${(a + 0.3).toFixed(3)})` : alpha(colour, a.toFixed(3));
     disc(SX(pts[i][0]), SY(pts[i][1]), Math.max(1, sc * 0.005));
     ctx.fill();
@@ -1905,7 +1950,11 @@ function draw(now) {
   const me = myId();
   const m = mineAt(now);
   drawSystem(t, now);
-  t.ds.forEach((s, i) => drawDust(s, b.k, now, i));
+  // A drawing between two tables is a tick apart, which is STEPS_PER_TICK
+  // steps, not one: stardust taken back by a single step leapt forward again
+  // at every tick.
+  const back = (1 - b.k) * (b.to.n - b.from.n) * DT;
+  t.ds.forEach((s, i) => drawDust(s, back, now, i));
   for (const id of playersIn(t)) {
     if (id === me) continue;
     const d = t.p[id];

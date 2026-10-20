@@ -1,7 +1,7 @@
 /**
  * @disk     splat
  * @author   claude
- * @version  2
+ * @version  3
  * @players  2-8
  * @about    A turf war in paint. Spray ink to colour the floor: your own ink is a fast lane that refills your tank, a rival's is mud. Splat a rival to splash their ground, lob ink bombs, grab the orb, and hold the most floor when time runs out.
  * @tags     game, party, realtime, paint, lockstep
@@ -1225,9 +1225,10 @@ function drawOrb(t, now) {
 
 // Drops: a bead of ink with a glint, drawn between steps; bombs: a ball on a
 // low arc with its shadow on the floor, blinking faster as it comes down.
-function drawFlying(t, k, now) {
+// `ago` is how many steps before its table's moment each is drawn.
+function drawFlying(t, ago, now) {
   for (const s of t.sh) {
-    const x = SX(s[0] - s[2] * (1 - k)), y = SY(s[1] - s[3] * (1 - k));
+    const x = SX(s[0] - s[2] * ago), y = SY(s[1] - s[3] * ago);
     const r = Math.max(1.6, cs * 0.17);
     ctx.fillStyle = shade(SEAT[s[6]], 0.6);
     disc(x, y, r * 1.25);
@@ -1240,8 +1241,8 @@ function drawFlying(t, k, now) {
     ctx.fill();
   }
   for (const b of t.bm) {
-    const x = SX(b[0] - b[2] * (1 - k)), y = SY(b[1] - b[3] * (1 - k));
-    const l = clamp((b[5] - k) / BOMB_LIFE, 0, 1);
+    const x = SX(b[0] - b[2] * ago), y = SY(b[1] - b[3] * ago);
+    const l = clamp((b[5] + ago) / BOMB_LIFE, 0, 1);
     const up = 4 * l * (1 - l) * cs * 1.6;
     const r = Math.max(3, cs * 0.36);
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -1746,7 +1747,9 @@ function draw(now) {
   const m = mineAt(now);
   drawFloor(t, now);
   drawOrb(t, now);
-  drawFlying(t, b.k, now);
+  // A drawing between two tables is a tick apart, STEPS_PER_TICK steps: a
+  // drop taken back by a single step leapt forward again at every tick.
+  drawFlying(t, (1 - b.k) * (b.to.n - b.from.n), now);
   for (const id of playersIn(t)) {
     if (id === me) continue;
     const d = t.p[id];
