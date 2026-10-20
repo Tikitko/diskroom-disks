@@ -105,6 +105,19 @@ Players should enjoy it in the first ten seconds.
   to their seat, clean shapes, readable type, a background that is not plain
   black. It fits the frame at any size and devicePixelRatio, phone portrait
   included; nothing cropped or blurry.
+- Use the free space. The field is as large as the frame lets it be, at any
+  shape of frame, and no band of the frame sits empty that the field could
+  have had. A frame wider than the field puts the status, the scoreboard,
+  the player's own gauges and the line of controls in the columns beside it,
+  and the field takes the whole height; a narrower one stacks them above and
+  below, and the field takes the whole width. Work out both and use whichever
+  draws the field bigger, as `orbit.js`, `broadside.js` and `splat.js` do.
+  Where the table holds more than the field shows — lanes that run on past
+  its edges, a tunnel laid further ahead than the screen — a wide frame shows
+  that too, dimmed past the playing area, as `leapfrog.js` and `flipside.js`
+  do, rather than leave bands of plain background. A world whose shape is
+  part of the rules is given the shape of the frames people play in, not a
+  small square in the middle of a wide screen.
 - Motion: drawn between simulation steps, eased in and out; nothing
   teleports. Physics advances in fixed steps counted off a clock, never one
   step per frame.
@@ -244,3 +257,30 @@ the same colour at once, and whatever it held up shakes and then falls on
 whoever is below. Air runs out on the way down, air capsules refill it and
 stone is slow to drill. A driller far behind gets a turbo drill. First to the
 bottom wins. (Mr. Driller as a race.)
+
+### pile_up
+
+A falling-block game for 2-8 players, in lockstep. Everybody's pieces fall
+into one shared well at once and pass through each other. A piece that sets
+tumbles down its columns, so the stack never holds a hole. A full row pays
+every block in it to whoever dropped it, plus a bonus to whoever finished
+it, and a stack that reaches your lane chokes it. The floor rises late in a
+round, and whoever trails drops gold blocks worth double. (Tetris in one
+shared well.)
+
+### petri
+
+A colony war in one dish for 2-8 players, in lockstep. Dragging from a
+colony you own to any other sends half its microbes, and a swarm bigger than
+the defenders takes the colony. Bigger colonies grow faster, the gold
+nucleus twice as fast, and every colony grows double in the last stretch of
+a round. Whoever holds under half the leader's microbes grows twice as fast,
+and a player wiped out drifts back as a spore. (Galcon / Auralux.)
+
+### musical_chairs
+
+A party game for 2-8 players, in lockstep. Everyone dances out wide for notes
+while the music plays and scrambles for too few chairs when it stops.
+Whoever is left standing spills half their notes for anybody to grab, and a
+dash bumps a rival dizzy. The music speeds up and the last two songs pay
+double. Whoever trails dances faster and dashes more often. (Musical chairs.)
