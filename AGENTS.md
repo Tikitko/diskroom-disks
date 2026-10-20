@@ -105,6 +105,19 @@ Players should enjoy it in the first ten seconds.
   to their seat, clean shapes, readable type, a background that is not plain
   black. It fits the frame at any size and devicePixelRatio, phone portrait
   included; nothing cropped or blurry.
+- Use the free space. The field is as large as the frame lets it be, at any
+  shape of frame, and no band of the frame sits empty that the field could
+  have had. A frame wider than the field puts the status, the scoreboard,
+  the player's own gauges and the line of controls in the columns beside it,
+  and the field takes the whole height; a narrower one stacks them above and
+  below, and the field takes the whole width. Work out both and use whichever
+  draws the field bigger, as `orbit.js`, `broadside.js` and `splat.js` do.
+  Where the table holds more than the field shows — lanes that run on past
+  its edges, a tunnel laid further ahead than the screen — a wide frame shows
+  that too, dimmed past the playing area, as `leapfrog.js` and `flipside.js`
+  do, rather than leave bands of plain background. A world whose shape is
+  part of the rules is given the shape of the frames people play in, not a
+  small square in the middle of a wide screen.
 - Motion: drawn between simulation steps, eased in and out; nothing
   teleports. Physics advances in fixed steps counted off a clock, never one
   step per frame.

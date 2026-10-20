@@ -1,7 +1,7 @@
 /**
  * @disk     flipside
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    A one-button race through a tunnel where gravity is yours to flip. Tap to fall to the ceiling and back, ride whichever side has ground, and land on a rival to flip them into a gap. The screen never waits: fall behind it and you are out.
  * @tags     game, party, realtime, arcade, lockstep
@@ -717,6 +717,11 @@ let coarse = matchMedia('(pointer: coarse)').matches;
 const NOTE_ROOM = 60;
 let VW = 640, VH = 400, TOP = 58, BOT = 26, dpx = 1;
 let CP = 30, FX0 = 0, FY0 = 0, FWP = 480, FHP = 300, fieldBot = 400;
+// Columns drawn: the screen's own VIEWC, and as many of the columns laid
+// beyond it as the frame has width for. The table lays the tunnel AHEAD
+// columns past the screen's left edge, so these are there to be seen.
+const EXTRA_MAX = AHEAD - VIEWC - 2;
+let VIEW = VIEWC;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   VW = cv.clientWidth || 640;
@@ -726,12 +731,15 @@ function layout() {
   dpx = dpr;
   TOP = VW < 420 ? 64 : 58;
   BOT = 26;
-  // The tunnel keeps its own shape, as large as the frame lets it be, with a
-  // strip under it: NOTE_ROOM keeps the practice note off the floor, and in
-  // a round the same strip says how many wings you hold.
+  // The tunnel is as tall as the frame lets it be, with a strip under it:
+  // NOTE_ROOM keeps the practice note off the floor, and in a round the same
+  // strip says how many wings you hold. A frame wider than the screen's own
+  // columns at that height shows the tunnel further ahead, so it runs from
+  // one side of the frame to the other rather than sit between empty bands.
   const ah = Math.max(60, VH - TOP - BOT - 4 - NOTE_ROOM);
-  CP = Math.max(4, Math.min((VW - 16) / VIEWC, ah / ROWS));
-  FWP = VIEWC * CP;
+  CP = Math.max(4, Math.min((VW - 8) / VIEWC, ah / ROWS));
+  VIEW = VIEWC + Math.max(0, Math.min(EXTRA_MAX, Math.floor((VW - 8) / CP) - VIEWC));
+  FWP = VIEW * CP;
   FHP = ROWS * CP;
   FX0 = (VW - FWP) / 2;
   FY0 = TOP + (ah - FHP) / 2;
@@ -970,7 +978,7 @@ function play(e, t) {
     turned.delete(e.a);
     if (e.a === me) sound.back();
   } else if (e.kind === 'faster') {
-    pop(camShown + VIEWC * CELL / 2, 2 * CELL, 'faster!', INK.danger, 20);
+    pop(camShown + VIEW * CELL / 2, 2 * CELL, 'faster!', INK.danger, 20);
     sound.faster();
   } else if (e.kind === 'beep') {
     sound.beep();
@@ -1042,7 +1050,7 @@ function drawTunnel(t, now) {
   ctx.lineWidth = 1;
   ctx.beginPath();
   const c0 = Math.floor(camShown / CELL);
-  for (let c = c0; c <= c0 + VIEWC + 1; c++) {
+  for (let c = c0; c <= c0 + VIEW + 1; c++) {
     const x = SX(c * CELL);
     ctx.moveTo(x, y0);
     ctx.lineTo(x, y0 + FHP);
@@ -1053,7 +1061,7 @@ function drawTunnel(t, now) {
   }
   ctx.stroke();
   const pad = Math.max(1, CP * 0.06);
-  for (let c = c0; c <= c0 + VIEWC + 1; c++) {
+  for (let c = c0; c <= c0 + VIEW + 1; c++) {
     const x = SX(c * CELL);
     for (let r = 0; r < ROWS; r++) {
       if (!solid(t, c, r)) continue;
@@ -1072,7 +1080,7 @@ function drawTunnel(t, now) {
   ctx.shadowBlur = Math.max(4, CP * 0.3);
   ctx.lineWidth = Math.max(1.5, CP * 0.08);
   ctx.beginPath();
-  for (let c = c0; c <= c0 + VIEWC + 1; c++) {
+  for (let c = c0; c <= c0 + VIEW + 1; c++) {
     const x = SX(c * CELL);
     for (let r = 0; r < ROWS; r++) {
       if (!solid(t, c, r)) continue;
@@ -1085,7 +1093,7 @@ function drawTunnel(t, now) {
   ctx.stroke();
   ctx.shadowBlur = 0;
   // Gaps open onto the night: a soft glow where the tunnel lets out.
-  for (let c = c0; c <= c0 + VIEWC + 1; c++) {
+  for (let c = c0; c <= c0 + VIEW + 1; c++) {
     const x = SX(c * CELL);
     if (!solid(t, c, 0)) {
       const g = ctx.createLinearGradient(0, y0, 0, y0 + CP);
@@ -1117,6 +1125,16 @@ function drawTunnel(t, now) {
     ctx.lineTo(x0 + 3, y + gap * 0.6);
     ctx.closePath();
     ctx.fill();
+  }
+  // Past the screen's own columns the tunnel is seen further off: a haze that
+  // thickens toward the frame's edge.
+  if (VIEW > VIEWC) {
+    const hx = x0 + VIEWC * CP;
+    const hz = ctx.createLinearGradient(hx, 0, x0 + FWP, 0);
+    hz.addColorStop(0, alpha(INK.page, 0));
+    hz.addColorStop(1, alpha(INK.page, 0.55));
+    ctx.fillStyle = hz;
+    ctx.fillRect(hx, y0, x0 + FWP - hx, FHP);
   }
   ctx.restore();
   ctx.strokeStyle = 'rgba(160,140,255,0.4)';

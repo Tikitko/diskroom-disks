@@ -1,7 +1,7 @@
 /**
  * @disk     orbit
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    Little ships circling one sun. Burn back to drop into a lower, faster orbit and catch what is ahead, burn forward to climb. Scoop up stardust, ram a slower ship to knock its dust loose, and refuel close to the sun without touching it.
  * @tags     game, party, realtime, space, lockstep
@@ -804,8 +804,10 @@ document.body.appendChild(muteBtn);
 
 let coarse = matchMedia('(pointer: coarse)').matches;
 const NOTE_ROOM = 60;
-const SPAN = 2.3;              // the width of sky always on screen, past the edge of the system
+const SPAN = 2.26;             // the width of sky always on screen: the system and the dark just past it
+const SIDE = 160;              // the least a column beside the system needs for the scoreboard
 let VW = 640, VH = 400, sc = 150, cx0 = 320, cy0 = 200, TOP = 58, BOT = 26, dpx = 1, fieldTop = 58, fieldBot = 340;
+let wide = false, colW = 0;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   VW = cv.clientWidth || 640;
@@ -819,16 +821,48 @@ function layout() {
 layout();
 window.addEventListener('resize', layout);
 
-// The whole system is always on screen, as large as it fits. NOTE_ROOM under
-// it keeps the practice note off the bottom of the system, and in a round the
-// same strip says how much fuel you have and where your orbit is taking you.
+// The whole system is always on screen, as large as the frame lets it be. A
+// frame wider than it is tall puts the status, the scoreboard, your fuel and
+// the line of controls in the columns either side of the system, so the system
+// takes the whole height. A narrower one stacks them in strips above and below
+// it, with NOTE_ROOM under it for the practice note and, in a round, for how
+// much fuel you have and where your orbit is taking you. Whichever of the two
+// draws the system bigger is the one used.
 function fit() {
   const ah = Math.max(60, VH - TOP - BOT - 4 - NOTE_ROOM);
-  sc = Math.max(10, Math.min((VW - 16) / SPAN, ah / SPAN));
+  const tall = Math.min(VW - 8, ah), side = Math.min(VH - 12, VW - 2 * SIDE);
+  wide = side > tall;
+  if (wide) {
+    sc = Math.max(10, side / SPAN);
+    cy0 = VH / 2;
+  } else {
+    sc = Math.max(10, tall / SPAN);
+    cy0 = TOP + ah / 2;
+  }
   cx0 = VW / 2;
-  cy0 = TOP + ah / 2;
+  colW = wide ? (VW - SPAN * sc) / 2 : 0;
   fieldTop = cy0 - (SPAN / 2) * sc;
   fieldBot = cy0 + (SPAN / 2) * sc;
+}
+
+// Words broken into lines no wider than `most`, at the dots between phrases
+// first and at spaces only when a phrase alone is too long.
+function wrap(s, px, most) {
+  ctx.font = font(px);
+  const out = [];
+  let line = '';
+  const put = (piece, sep) => {
+    const next = line ? line + sep + piece : piece;
+    if (!line || ctx.measureText(next).width <= most) { line = next; return; }
+    out.push(line);
+    line = piece;
+  };
+  for (const phrase of s.split(' · ')) {
+    if (ctx.measureText(phrase).width <= most) { put(phrase, ' · '); continue; }
+    phrase.split(' ').forEach((word, i) => put(word, i ? ' ' : ' · '));
+  }
+  if (line) out.push(line);
+  return out;
 }
 
 const SX = (x) => cx0 + x * sc + shakeX;
@@ -1244,24 +1278,43 @@ function drawDust(s, k, now, i) {
   ctx.fill();
 }
 
-// Where your orbit takes you if you let go now: the same gravity the table
-// runs, worked out ahead from where your ship is drawn, a dotted line that
-// fades as it reaches further, red where it ends in the sun or past the rim.
-// It is only a drawing: nothing in the table comes from it.
-function drawPath(x, y, vx, vy, sr, colour) {
-  const h = 1 / 60;
-  let px = x, py = y, end = 0;
+// Where your orbit takes you if you let go now, a dotted line that fades as it
+// reaches further, red where it ends in the sun or past the rim. It is the
+// orbit's own shape rather than a flight worked out step by step: the curve a
+// ship falls along round one sun is fixed by its angular momentum and its
+// eccentricity vector, so the line is that ellipse, or the open curve of a
+// ship on its way out, from where your ship is drawn onward. A flight worked
+// out seven seconds ahead from the drawn ship swung about at its far end on
+// every tick, because the guess it starts from is remade every tick; this one
+// moves only as the orbit does, and its shape is eased toward the guess on
+// top of that. It is only a drawing: nothing in the table comes from it.
+let shape = null;        // [h, ex, ey]: the orbit as drawn
+function drawPath(x, y, d, sr, colour) {
+  const r0 = Math.sqrt(d.x * d.x + d.y * d.y) || 1e-9, h0 = d.x * d.vy - d.y * d.vx;
+  const want = [h0, (d.vy * h0) / GM - d.x / r0, (-d.vx * h0) / GM - d.y / r0];
+  if (!shape || Math.abs(want[0] - shape[0]) > 0.05 || Math.abs(want[1] - shape[1]) + Math.abs(want[2] - shape[2]) > 0.3) {
+    shape = want;
+  } else {
+    const k = per60(0.35);
+    for (let i = 0; i < 3; i++) shape[i] += (want[i] - shape[i]) * k;
+  }
+  const [h, ex, ey] = shape;
+  const p = (h * h) / GM, e = Math.hypot(ex, ey), w0 = Math.atan2(ey, ex), dir = h >= 0 ? 1 : -1;
   const pts = [];
-  for (let i = 0; i < 420; i++) {
-    const r2 = px * px + py * py, r = Math.sqrt(r2);
+  let end = 0, last = null, run = 0;
+  const th0 = Math.atan2(y, x);
+  for (let i = 0; i <= 700; i++) {
+    const th = th0 + dir * i * 0.009;
+    const q = 1 + e * Math.cos(th - w0);
+    if (q <= 0.02) { end = 2; break; }
+    const r = p / q;
     if (r < sr) { end = 1; break; }
     if (r > LOST_R) { end = 2; break; }
-    const g = GM / (r2 * r);
-    vx -= px * g * h;
-    vy -= py * g * h;
-    px += vx * h;
-    py += vy * h;
-    if (i % 4 === 0) pts.push([px, py]);
+    const px = r * Math.cos(th), py = r * Math.sin(th);
+    if (last) run += Math.hypot(px - last[0], py - last[1]);
+    last = [px, py];
+    if (i === 0 || run >= 0.03) { pts.push([px, py]); run = 0; }
+    if (pts.length >= 110) break;
   }
   for (let i = 0; i < pts.length; i++) {
     const a = 0.55 * (1 - i / pts.length);
@@ -1312,7 +1365,7 @@ function drawShip(id, x, y, d, colour, me, t, now) {
   const [ex, ey, thr] = engineOf(d);
   const burning = d.th === 1 && thr > 0;
   const [hx, hy] = burning ? [ex, ey] : unit(d.vx, d.vy);
-  const sx = SX(x), sy = SY(y), R = Math.max(5, SHIP_R * sc * 1.15);
+  const sx = SX(x), sy = SY(y), R = Math.max(7, SHIP_R * sc * 1.35);
   if (burning && Math.random() < 0.7) {
     spray(x - hx * SHIP_R, y - hy * SHIP_R, 1, Math.random() < 0.5 ? '#ffd27a' : '#ff8a3d', 0.08, 0.005, 0.85, d.vx * 0.6 - hx * 0.35, d.vy * 0.6 - hy * 0.35);
   }
@@ -1335,44 +1388,164 @@ function drawShip(id, x, y, d, colour, me, t, now) {
   ctx.rotate(Math.atan2(hy, hx));
   const sq_ = 1 + look.squash * 0.35;
   ctx.scale(1 / sq_, sq_);
+  const kind = HULLS[d.c % HULLS.length];
   if (burning) {
-    const f = 0.7 + 0.3 * Math.sin(now / 40 + id);
-    ctx.fillStyle = 'rgba(255,170,70,0.85)';
+    const f = 0.7 + 0.3 * Math.sin(now / 40 + id), back = -R * kind.tail;
+    ctx.fillStyle = 'rgba(255,150,60,0.8)';
     ctx.beginPath();
-    ctx.moveTo(-R * 0.55, -R * 0.38);
-    ctx.lineTo(-R * (1.2 + 0.9 * thr * f), 0);
-    ctx.lineTo(-R * 0.55, R * 0.38);
+    ctx.moveTo(back, -R * 0.3);
+    ctx.quadraticCurveTo(back - R * (0.8 + 1.1 * thr * f), 0, back, R * 0.3);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = 'rgba(255,240,200,0.9)';
+    ctx.fillStyle = 'rgba(255,244,210,0.95)';
     ctx.beginPath();
-    ctx.moveTo(-R * 0.55, -R * 0.2);
-    ctx.lineTo(-R * (0.9 + 0.4 * thr * f), 0);
-    ctx.lineTo(-R * 0.55, R * 0.2);
+    ctx.moveTo(back, -R * 0.15);
+    ctx.quadraticCurveTo(back - R * (0.45 + 0.5 * thr * f), 0, back, R * 0.15);
     ctx.closePath();
     ctx.fill();
   }
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.beginPath();
-  ctx.moveTo(R * 1.15 + 1.5, 1.5);
-  ctx.lineTo(-R * 0.75 + 1.5, R * 0.8 + 1.5);
-  ctx.lineTo(-R * 0.4 + 1.5, 1.5);
-  ctx.lineTo(-R * 0.75 + 1.5, -R * 0.8 + 1.5);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = look.hit > 0.3 ? '#ffffff' : colour;
-  ctx.beginPath();
-  ctx.moveTo(R * 1.15, 0);
-  ctx.lineTo(-R * 0.75, R * 0.8);
-  ctx.lineTo(-R * 0.4, 0);
-  ctx.lineTo(-R * 0.75, -R * 0.8);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  disc(R * 0.3, 0, R * 0.22);
-  ctx.fill();
+  kind.draw(R, colour, look.hit > 0.3, now + id * 300);
   ctx.restore();
 }
+
+// The hulls a ship can fly, one a seat, each drawn pointing along +x with its
+// nozzle `tail` radii behind its middle: a dart with swept wings, a saucer
+// with a glass dome and running lights, a rocket with fins and a porthole, a
+// beetle with two engine pods. The colour is the seat's; white for a moment
+// after a crash.
+function shade(hex, k) {
+  const c = rgb(hex).map((v) => Math.round(k > 0 ? v + (255 - v) * k : v * (1 + k)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function glass(x, y, rx, ry) {
+  ctx.fillStyle = '#9fe3ff';
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(20,30,70,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(x - rx * 0.15, y + ry * 0.2, rx * 0.8, ry * 0.7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.ellipse(x + rx * 0.25, y - ry * 0.35, rx * 0.35, ry * 0.25, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+function nozzle(x, half) {
+  ctx.fillStyle = '#3a3557';
+  ctx.fillRect(x, -half, half * 1.2, half * 2);
+  ctx.fillStyle = '#6f6994';
+  ctx.fillRect(x + half * 0.5, -half * 0.8, half * 0.7, half * 1.6);
+}
+const HULLS = [
+  { tail: 0.85, draw(R, c, hit) {
+    const body = hit ? '#ffffff' : c, dark = hit ? '#ffffff' : shade(c, -0.35);
+    nozzle(-R * 0.85, R * 0.18);
+    ctx.fillStyle = dark;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(R * 0.25, s * R * 0.12);
+      ctx.lineTo(-R * 0.55, s * R * 1.0);
+      ctx.lineTo(-R * 0.8, s * R * 0.95);
+      ctx.lineTo(-R * 0.5, s * R * 0.15);
+      ctx.closePath();
+      ctx.fill();
+    }
+    const g = ctx.createLinearGradient(0, -R * 0.3, 0, R * 0.3);
+    g.addColorStop(0, hit ? '#ffffff' : shade(c, 0.45));
+    g.addColorStop(1, body);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(R * 1.25, 0);
+    ctx.quadraticCurveTo(R * 0.5, -R * 0.34, -R * 0.75, -R * 0.24);
+    ctx.lineTo(-R * 0.75, R * 0.24);
+    ctx.quadraticCurveTo(R * 0.5, R * 0.34, R * 1.25, 0);
+    ctx.fill();
+    glass(R * 0.42, 0, R * 0.3, R * 0.14);
+  } },
+  { tail: 1.05, draw(R, c, hit, now) {
+    nozzle(-R * 1.15, R * 0.16);
+    ctx.fillStyle = hit ? '#ffffff' : shade(c, -0.4);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, R * 0.98, R * 0.98, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const g = ctx.createRadialGradient(-R * 0.3, -R * 0.3, R * 0.1, 0, 0, R * 0.9);
+    g.addColorStop(0, hit ? '#ffffff' : shade(c, 0.5));
+    g.addColorStop(1, hit ? '#ffffff' : c);
+    ctx.fillStyle = g;
+    disc(0, 0, R * 0.84);
+    ctx.fill();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + now / 600;
+      ctx.fillStyle = Math.floor(now / 200 + i) % 3 ? 'rgba(255,255,255,0.5)' : '#fff6b0';
+      disc(Math.cos(a) * R * 0.66, Math.sin(a) * R * 0.66, R * 0.08);
+      ctx.fill();
+    }
+    glass(R * 0.1, 0, R * 0.38, R * 0.38);
+  } },
+  { tail: 0.9, draw(R, c, hit) {
+    const body = hit ? '#ffffff' : c, dark = hit ? '#ffffff' : shade(c, -0.4);
+    nozzle(-R * 0.95, R * 0.2);
+    ctx.fillStyle = dark;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(-R * 0.2, s * R * 0.32);
+      ctx.lineTo(-R * 0.75, s * R * 0.85);
+      ctx.lineTo(-R * 0.85, s * R * 0.3);
+      ctx.closePath();
+      ctx.fill();
+    }
+    const g = ctx.createLinearGradient(0, -R * 0.38, 0, R * 0.38);
+    g.addColorStop(0, '#f4f2ff');
+    g.addColorStop(1, '#b9b4d6');
+    ctx.fillStyle = hit ? '#ffffff' : g;
+    roundRect(-R * 0.85, -R * 0.36, R * 1.45, R * 0.72, R * 0.3);
+    ctx.fill();
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.moveTo(R * 0.55, -R * 0.34);
+    ctx.quadraticCurveTo(R * 1.15, -R * 0.2, R * 1.3, 0);
+    ctx.quadraticCurveTo(R * 1.15, R * 0.2, R * 0.55, R * 0.34);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(-R * 0.5, -R * 0.36, R * 0.18, R * 0.72);
+    glass(R * 0.15, 0, R * 0.17, R * 0.17);
+  } },
+  { tail: 0.75, draw(R, c, hit) {
+    const body = hit ? '#ffffff' : c, dark = hit ? '#ffffff' : shade(c, -0.4);
+    for (const s of [-1, 1]) {
+      ctx.save();
+      ctx.translate(0, s * R * 0.62);
+      nozzle(-R * 0.85, R * 0.12);
+      ctx.fillStyle = dark;
+      roundRect(-R * 0.75, -R * 0.22, R * 1.2, R * 0.44, R * 0.22);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      roundRect(-R * 0.6, -R * 0.15, R * 0.9, R * 0.1, R * 0.05);
+      ctx.fill();
+      ctx.restore();
+    }
+    const g = ctx.createRadialGradient(-R * 0.2, -R * 0.25, R * 0.1, 0, 0, R * 0.8);
+    g.addColorStop(0, hit ? '#ffffff' : shade(c, 0.45));
+    g.addColorStop(1, body);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const px = Math.cos(a) * R * 0.72 * (i === 0 ? 1.25 : 1), py = Math.sin(a) * R * 0.55;
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = dark;
+    ctx.lineWidth = Math.max(1, R * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(-R * 0.5, 0);
+    ctx.lineTo(R * 0.2, 0);
+    ctx.stroke();
+    glass(R * 0.45, 0, R * 0.22, R * 0.3);
+  } },
+];
 
 function drawBits() {
   flat();
@@ -1435,16 +1608,19 @@ function drawHud(t, now) {
   text('orbit', 12, 22, titlePx, '#c9b8ff', 'left');
   ctx.font = font(titlePx);
   const tw = ctx.measureText('orbit').width;
-  fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
+  if (wide) fitText(status, 12, 44, 14, colour, colW - 24, 'left');
+  else fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
   text(wireNote(), VW - 50, 22, 10, INK.dim, 'right');
 
   // The scoreboard: one chip a player in their colour, with their dust; the
-  // chip of a lost ship is hollow.
+  // chip of a lost ship is hollow. A row across the top of a narrow frame, a
+  // column down the left of a wide one.
   const ids = bySeat(t);
   if (ids.length) {
-    const y = narrow ? 46 : 44;
-    const gap = 6, cw = Math.min(150, (VW - 24 - gap * (ids.length - 1)) / ids.length);
-    let x = (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    const gap = 6;
+    const cw = wide ? Math.min(200, colW - 24) : Math.min(150, (VW - 24 - gap * (ids.length - 1)) / ids.length);
+    let x = wide ? 12 : (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    let y = wide ? 78 : narrow ? 46 : 44;
     for (const id of ids) {
       const d = t.p[id], mine = id === me, c = SEAT[d.c];
       ctx.fillStyle = mine ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.28)';
@@ -1462,36 +1638,45 @@ function drawHud(t, now) {
       const ww = wins ? ctx.measureText(wins).width + 5 : 0;
       if (wins && cw > 56) text(wins, x + cw - 12 - gw, y + 2, 10, '#efeaff', 'right');
       if (cw > 64) fitText(mine ? 'you' : nickOf(id), x + 20, y + 3, 12, d.st === FLY ? (mine ? INK.text : INK.muted) : INK.dim, cw - 34 - gw - ww, 'left');
-      x += cw + gap;
+      if (wide) y += 22 + gap; else x += cw + gap;
     }
   }
 
-  // The one line that says how to play.
+  // The one line that says how to play: across the foot of a narrow frame, and
+  // broken into lines at the foot of the right-hand column of a wide one.
   const how = coarse
     ? 'drag to fire the engine that way · tap to kick'
     : 'hold the mouse to burn toward it · ↑↓ speed up or slow down, ←→ sideways · space kicks · M mutes';
-  fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20);
+  if (!wide) { fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20); return; }
+  const lines = wrap(how, 12, colW - 24);
+  lines.forEach((s, i) => text(s, VW - 12, VH - 12 - (lines.length - 1 - i) * 17, 12, INK.muted, 'right'));
 }
 
-// Your fuel, whether a kick is ready and where your orbit is taking you, in
-// the strip under the system while a round is on.
+// Your fuel, whether a kick is ready and where your orbit is taking you while
+// a round is on: in the strip under the system, or halfway down the right-hand
+// column of a wide frame, the tag under the gauge.
 function drawMine(t, end) {
   const d = t.p[myId()];
   if (!d || t.ph === WAIT) return;
   flat();
-  const y = Math.min(fieldBot + NOTE_ROOM / 2 - 8, VH - BOT - 18);
+  const y = wide ? VH / 2 : Math.min(fieldBot + NOTE_ROOM / 2 - 8, VH - BOT - 18);
+  const mid = wide ? VW - colW / 2 : VW / 2, room = wide ? colW - 24 : VW - 24;
   if (d.st !== FLY) {
     const line = t.ph === PLAY ? 'lost! you are back in orbit in a moment' : t.ph === COUNT ? 'get ready' : '';
-    if (line) fitText(line, VW / 2, y + 5, 13, INK.muted, VW - 24);
+    if (line) fitText(line, mid, y + 5, 13, INK.muted, room);
     return;
   }
-  const bar = Math.min(110, VW * 0.22);
+  const bar = wide ? Math.min(140, room - 34) : Math.min(110, VW * 0.22);
   const tag = end === 1 ? 'falling into the sun!' : end === 2 ? 'drifting out of the system!' : d.cd === 0 && d.fu >= KICK_FUEL ? 'kick ready' : 'kick charging';
   const bad = end !== 0;
   ctx.font = font(12);
   const tagW = ctx.measureText(tag).width;
-  const total = 34 + bar + 14 + tagW;
-  let x = VW / 2 - total / 2;
+  const total = wide ? 34 + bar : 34 + bar + 14 + tagW;
+  let x = mid - total / 2;
+  if (wide) {
+    const tagColour = bad ? (Math.floor(performance.now() / 250) % 2 ? INK.danger : INK.text) : d.cd === 0 ? INK.text : INK.dim;
+    fitText(tag, mid, y + 26, 12, tagColour, room);
+  }
   text('fuel', x, y + 4, 11, INK.dim, 'left');
   x += 34;
   ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -1506,6 +1691,7 @@ function drawMine(t, end) {
     disc(x + bar + 4, y, 2.5);
     ctx.fill();
   }
+  if (wide) return;
   x += bar + 14;
   text(tag, x, y + 4, 12, bad ? (Math.floor(performance.now() / 250) % 2 ? INK.danger : INK.text) : d.cd === 0 ? INK.text : INK.dim, 'left');
 }
@@ -1602,7 +1788,10 @@ function drawOverlay(t, now) {
     const two = humans(t).length >= 2;
     const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
     const tip = two ? null : 'burn back to drop lower and catch up · coast near the sun to refuel';
-    practiceNote(now, VW, head, tip, [[TOP, fieldTop - 4], [fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
+    // A wide frame has no strip above or below the system: the note sits at
+    // the foot, over the dark past the rim, where nothing is worth flying.
+    if (wide) practiceNote(now, VW, head, tip, [], VH - 8);
+    else practiceNote(now, VW, head, tip, [[TOP, fieldTop - 4], [fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
@@ -1731,11 +1920,11 @@ function draw(now) {
     const [x, y] = settle(p[0], p[1]);
     const d = p[2];
     myPos = [x, y];
-    if (t.ph !== END) end = drawPath(x, y, d.vx, d.vy, t.sr, SEAT[d.c]);
+    if (t.ph !== END) end = drawPath(x, y, d, t.sr, SEAT[d.c]);
     drawShip(me, x, y, d, SEAT[d.c], true, t, now);
     if (d.th === 1 && t.ph !== COUNT) sound.burn();
   } else {
-    myPos = shown = null;
+    myPos = shown = shape = null;
   }
   drawSun(t, now);
   for (const [id, look] of looks) if (now - look.seen > 1000) looks.delete(id);

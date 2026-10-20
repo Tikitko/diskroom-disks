@@ -1,7 +1,7 @@
 /**
  * @disk     leapfrog
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    Everybody hops one busy road and one river at once, racing for five lily pads that hold a frog each. Ride the logs, dodge the trucks, and land on a rival to shove them into trouble. Every wave runs faster, and whoever trails starts from the middle bank.
  * @tags     game, party, realtime, arcade, lockstep
@@ -761,8 +761,10 @@ document.body.appendChild(muteBtn);
 
 let coarse = matchMedia('(pointer: coarse)').matches;
 const NOTE_ROOM = 60;
+const SIDE = 160;              // the least a column beside the crossing needs for the scoreboard
 let VW = 640, VH = 400, TOP = 58, BOT = 26, dpx = 1;
 let CP = 16, FX0 = 0, FY0 = 0, FWP = 240, FHP = 208, fieldBot = 400;
+let wide = false, colW = 0, EXT = 0;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   VW = cv.clientWidth || 640;
@@ -778,16 +780,47 @@ window.addEventListener('resize', layout);
 
 // The crossing keeps its own shape, as large as the frame lets it be. While
 // the table waits for a round a strip under it holds the practice note, which
-// would otherwise sit on the near bank, where every frog starts.
+// would otherwise sit on the near bank, where every frog starts. A frame wider
+// than the crossing puts the status, the scoreboard and the line of controls
+// in the columns either side of it, so it takes the whole height, and the
+// rows run on into those columns, dimmed, as far as the lanes do: the traffic
+// is seen coming before it is on the crossing. A narrower frame stacks them in
+// strips above and below. Whichever of the two draws the crossing bigger is
+// the one used.
 function fit(t) {
   const room = t.ph === WAIT ? NOTE_ROOM : 20;
   const ah = Math.max(60, VH - TOP - BOT - 4 - room);
-  CP = Math.max(3, Math.min((VW - 16) / COLS, ah / ROWS));
+  const sh = VH - 12 - (t.ph === WAIT ? NOTE_ROOM : 0);
+  const tall = Math.min((VW - 8) / COLS, ah / ROWS), side = Math.min(sh / ROWS, (VW - 2 * SIDE) / COLS);
+  wide = side > tall;
+  CP = Math.max(3, wide ? side : tall);
   FWP = COLS * CP;
   FHP = ROWS * CP;
   FX0 = (VW - FWP) / 2;
-  FY0 = TOP + (ah - FHP) / 2;
+  FY0 = wide ? 6 + (sh - FHP) / 2 : TOP + (ah - FHP) / 2;
+  colW = wide ? FX0 : 0;
+  EXT = wide ? Math.min(MARGIN / U, FX0 / CP) : 0;
   fieldBot = FY0 + FHP;
+}
+
+// Words broken into lines no wider than `most`, at the dots between phrases
+// first and at spaces only when a phrase alone is too long.
+function wrap(s, px, most) {
+  ctx.font = font(px);
+  const out = [];
+  let line = '';
+  const put = (piece, sep) => {
+    const next = line ? line + sep + piece : piece;
+    if (!line || ctx.measureText(next).width <= most) { line = next; return; }
+    out.push(line);
+    line = piece;
+  };
+  for (const phrase of s.split(' · ')) {
+    if (ctx.measureText(phrase).width <= most) { put(phrase, ' · '); continue; }
+    phrase.split(' ').forEach((word, i) => put(word, i ? ' ' : ' · '));
+  }
+  if (line) out.push(line);
+  return out;
 }
 
 // Cells to the screen: the left or top edge of a column or a row.
@@ -1057,23 +1090,25 @@ function drawGround() {
 // near bank. Only the ripples move by the clock, and they are drawing alone.
 function drawRows(t, now) {
   const x0 = FX0 + shakeX, y0 = FY0 + shakeY;
+  // In a wide frame the rows run on past both edges, EXT cells each way.
+  const ext = EXT * CP, xl = x0 - ext, rw = FWP + 2 * ext, c0 = -Math.ceil(EXT), c1 = COLS + Math.ceil(EXT);
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   roundRect(x0 - 7, y0 - 5, FWP + 14, FHP + 16, 10);
   ctx.fill();
   ctx.save();
-  roundRect(x0, y0, FWP, FHP, 6);
+  roundRect(xl, y0, rw, FHP, 6);
   ctx.clip();
   for (let r = 0; r < ROWS; r++) {
     const y = y0 + r * CP;
     if (r === PAD_ROW) {
       ctx.fillStyle = INK.reed;
-      ctx.fillRect(x0, y, FWP, CP);
+      ctx.fillRect(xl, y, rw, CP);
       ctx.fillStyle = INK.reedHi;
-      for (let c = 0; c < COLS; c++) {
+      for (let c = c0; c < c1; c++) {
         if (PADS.includes(c)) continue;
         for (let k = 0; k < 3; k++) {
           const bx = x0 + (c + 0.2 + k * 0.3) * CP;
-          ctx.fillRect(bx, y + CP * (0.15 + 0.1 * ((c + k) % 3)), Math.max(1, CP * 0.08), CP * 0.8);
+          ctx.fillRect(bx, y + CP * (0.15 + 0.1 * mod(c + k, 3)), Math.max(1, CP * 0.08), CP * 0.8);
         }
       }
       for (const c of PADS) {
@@ -1086,12 +1121,12 @@ function drawRows(t, now) {
       g.addColorStop(0, INK.waterHi);
       g.addColorStop(1, INK.water);
       ctx.fillStyle = g;
-      ctx.fillRect(x0, y, FWP, CP + 1);
+      ctx.fillRect(xl, y, rw, CP + 1);
       ctx.strokeStyle = INK.ripple;
       ctx.lineWidth = Math.max(1, CP * 0.05);
       const drift = ((now / 1000) * (t.lv[r] >= 0 ? 0.3 : -0.3)) % 3;
       ctx.beginPath();
-      for (let c = -3; c < COLS + 3; c += 3) {
+      for (let c = -3 - 3 * Math.ceil(EXT / 3); c < c1 + 3; c += 3) {
         const rx = x0 + (c + drift + (r % 2) * 1.5) * CP, ry = y + CP * (0.3 + 0.4 * ((c + r) % 2 ? 1 : 0));
         ctx.moveTo(rx, ry);
         ctx.lineTo(rx + CP * 0.8, ry);
@@ -1099,23 +1134,25 @@ function drawRows(t, now) {
       ctx.stroke();
     } else if (isRoad(r)) {
       ctx.fillStyle = r % 2 ? INK.road : INK.roadHi;
-      ctx.fillRect(x0, y, FWP, CP + 1);
+      ctx.fillRect(xl, y, rw, CP + 1);
       if (r > 7) {
         ctx.strokeStyle = INK.paint;
         ctx.lineWidth = Math.max(1, CP * 0.06);
         ctx.setLineDash([CP * 0.5, CP * 0.5]);
+        ctx.lineDashOffset = ext;
         ctx.beginPath();
-        ctx.moveTo(x0, y);
-        ctx.lineTo(x0 + FWP, y);
+        ctx.moveTo(xl, y);
+        ctx.lineTo(xl + rw, y);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
       }
     } else {
       ctx.fillStyle = r === MID_ROW ? INK.grassHi : INK.grass;
-      ctx.fillRect(x0, y, FWP, CP + 1);
+      ctx.fillRect(xl, y, rw, CP + 1);
       ctx.fillStyle = INK.tuft;
-      for (let c = 0; c < COLS; c++) {
-        const k = (c * 7 + r * 3) % 5;
+      for (let c = c0; c < c1; c++) {
+        const k = mod(c * 7 + r * 3, 5);
         if (k > 1) continue;
         const tx = x0 + (c + 0.3 + k * 0.3) * CP, ty = y + CP * (0.35 + k * 0.25);
         ctx.fillRect(tx, ty, Math.max(1, CP * 0.07), CP * 0.18);
@@ -1125,8 +1162,8 @@ function drawRows(t, now) {
   }
   // The kerbs where the road meets the banks.
   ctx.fillStyle = INK.kerb;
-  ctx.fillRect(x0, y0 + 7 * CP - Math.max(1, CP * 0.06), FWP, Math.max(1.5, CP * 0.1));
-  ctx.fillRect(x0, y0 + 12 * CP - Math.max(1, CP * 0.04), FWP, Math.max(1.5, CP * 0.1));
+  ctx.fillRect(xl, y0 + 7 * CP - Math.max(1, CP * 0.06), rw, Math.max(1.5, CP * 0.1));
+  ctx.fillRect(xl, y0 + 12 * CP - Math.max(1, CP * 0.04), rw, Math.max(1.5, CP * 0.1));
   ctx.restore();
   ctx.strokeStyle = INK.rim;
   ctx.lineWidth = 2;
@@ -1186,9 +1223,9 @@ function laneRun(from, to, k, r) {
 const shortWay = (d) => (d > LOOP / 2 ? d - LOOP : d < -LOOP / 2 ? d + LOOP : d);
 
 function drawLanes(b, now) {
-  const t = b.to;
+  const t = b.to, ext = EXT * CP, eu = EXT * U;
   ctx.save();
-  roundRect(FX0 + shakeX, FY0 + shakeY, FWP, FHP, 6);
+  roundRect(FX0 + shakeX - ext, FY0 + shakeY, FWP + 2 * ext, FHP, 6);
   ctx.clip();
   for (let r = 0; r < ROWS; r++) {
     if (!isLane(r)) continue;
@@ -1196,12 +1233,33 @@ function drawLanes(b, now) {
     for (const sg of t.ls[r]) {
       const p = mod(sg[0] + run, LOOP) - MARGIN;
       for (const q of [p, p - LOOP]) {
-        if (q >= FIELD || q + sg[1] <= 0) continue;
+        if (q >= FIELD + eu || q + sg[1] <= -eu) continue;
         thing(sg, q / U, r, sg[1] / U, dir, t.n, now);
       }
     }
   }
   ctx.restore();
+}
+
+// The rows past both edges of a wide frame's crossing are only to look at: a
+// veil over them, deepening toward the frame's edge, and the rim round the
+// crossing drawn again over the traffic so its edges stay plain.
+function drawVeil() {
+  if (EXT <= 0) return;
+  flat();
+  const ext = EXT * CP, x0 = FX0 + shakeX, y0 = FY0 + shakeY;
+  for (const s of [-1, 1]) {
+    const a = s < 0 ? x0 - ext : x0 + FWP, b = s < 0 ? x0 : x0 + FWP + ext;
+    const g = ctx.createLinearGradient(s < 0 ? b : a, 0, s < 0 ? a : b, 0);
+    g.addColorStop(0, 'rgba(8,18,22,0.45)');
+    g.addColorStop(1, alpha(INK.page, 0.96));
+    ctx.fillStyle = g;
+    ctx.fillRect(a, y0, b - a, FHP);
+  }
+  ctx.strokeStyle = INK.rim;
+  ctx.lineWidth = 2;
+  roundRect(x0 - 2, y0 - 2, FWP + 4, FHP + 4, 7);
+  ctx.stroke();
 }
 
 // One thing in a lane, `x` and `len` in cells.
@@ -1503,16 +1561,19 @@ function drawHud(t, now) {
   text('leapfrog', 12, 22, titlePx, SEAT[3], 'left');
   ctx.font = font(titlePx);
   const tw = ctx.measureText('leapfrog').width;
-  fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
+  if (wide) fitText(status, 12, 44, 14, colour, colW - 24, 'left');
+  else fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
   text(wireNote(), VW - 50, 22, 10, INK.dim, 'right');
 
   // The scoreboard: one chip a player in their colour, with points; whoever
-  // trails and starts from the middle bank has an arrow by their name.
+  // trails and starts from the middle bank has an arrow by their name. A row
+  // across the top of a narrow frame, a column down the left of a wide one.
   const ids = inPlay(t);
   if (ids.length) {
-    const y = narrow ? 46 : 44;
-    const gap = 6, cw = Math.min(140, (VW - 24 - gap * (ids.length - 1)) / ids.length);
-    let x = (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    const gap = 6;
+    const cw = wide ? Math.min(200, colW - 24) : Math.min(140, (VW - 24 - gap * (ids.length - 1)) / ids.length);
+    let x = wide ? 12 : (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    let y = wide ? 78 : narrow ? 46 : 44;
     for (const id of ids) {
       const d = t.p[id], mine = id === me, c = SEAT[d.c];
       const bump = scoreBump.get(id) || 0;
@@ -1538,28 +1599,33 @@ function drawHud(t, now) {
       const sw = ctx.measureText(score).width;
       text(score, x + cw - 8, y + 3, 12 + bump * 3, INK.gold, 'right');
       if (cw > 46) fitText(mine ? 'you' : nickOf(id), x + 22, y + 3, 12, mine ? INK.text : INK.muted, cw - 32 - sw, 'left');
-      x += cw + gap;
+      if (wide) y += 22 + gap; else x += cw + gap;
     }
   }
 
-  // The one line that says how to play.
+  // The one line that says how to play: across the foot of a narrow frame, and
+  // broken into lines at the foot of the right-hand column of a wide one.
   const how = coarse
     ? 'swipe to hop · tap hops forward · land on a rival to shove them'
     : 'arrows/WASD hop · click hops toward the pointer · land on a rival to shove them · M mutes';
-  fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20);
+  if (!wide) { fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20); return; }
+  const lines = wrap(how, 12, colW - 24);
+  lines.forEach((s, i) => text(s, VW - 12, VH - 12 - (lines.length - 1 - i) * 17, 12, INK.muted, 'right'));
 }
 
-// Under the crossing while a round is on: what you are doing in it.
+// While a round is on, what you are doing in it: under the crossing, or in
+// lines halfway down the right-hand column of a wide frame.
 function drawMine(t) {
   if (t.ph !== PLAY) return;
   flat();
   const d = t.p[myId()];
-  const y = fieldBot + 15;
   let line, c = INK.dim;
   if (!d || d.st !== IN) line = 'watching · you play from the next round';
   else if (trailing(t, myId())) { line = 'you trail · you start again from the middle bank'; c = INK.gold; }
   else line = 'a pad pays +' + PAD_POINTS + ' · the fly +' + FLY_POINTS + ' · a shove into trouble +' + SHOVE_POINTS;
-  fitText(line, VW / 2, y, 11, c, VW - 24);
+  if (!wide) { fitText(line, VW / 2, fieldBot + 15, 11, c, VW - 24); return; }
+  const lines = wrap(line, 12, colW - 24);
+  lines.forEach((s, i) => text(s, VW - colW / 2, VH / 2 + (i - (lines.length - 1) / 2) * 17, 12, c, 'center'));
 }
 
 // ═══════════════════ the practice note ═══════════════════
@@ -1663,7 +1729,7 @@ function drawOverlay(t, now) {
     const two = humans(t).length >= 2;
     const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
     const tip = two ? null : 'ride the logs to a lily pad · land on a rival to shove them';
-    practiceNote(now, VW, head, tip, [[fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
+    practiceNote(now, VW, head, tip, [[fieldBot + 4, wide ? VH : VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
@@ -1765,6 +1831,7 @@ function draw(now) {
   drawRows(t, now);
   drawPads(t, now);
   drawLanes(b, now);
+  drawVeil();
   const me = myId();
   const list = [];
   for (const id of inPlay(t)) {

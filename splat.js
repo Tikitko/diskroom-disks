@@ -1,7 +1,7 @@
 /**
  * @disk     splat
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    A turf war in paint. Spray ink to colour the floor: your own ink is a fast lane that refills your tank, a rival's is mud. Splat a rival to splash their ground, lob ink bombs, grab the orb, and hold the most floor when time runs out.
  * @tags     game, party, realtime, paint, lockstep
@@ -816,7 +816,9 @@ document.body.appendChild(muteBtn);
 
 let coarse = matchMedia('(pointer: coarse)').matches;
 const NOTE_ROOM = 60;
+const SIDE = 160;              // the least a column beside the floor needs for the scoreboard
 let VW = 640, VH = 400, cs = 12, ox = 0, oy = 64, TOP = 64, BOT = 26, dpx = 1, fieldTop = 64, fieldBot = 340;
+let wide = false, colW = 0;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   VW = cv.clientWidth || 640;
@@ -830,16 +832,43 @@ function layout() {
 layout();
 window.addEventListener('resize', layout);
 
-// The whole floor is always on screen, as large as it fits. NOTE_ROOM under
-// it keeps the practice note off the bottom row, and in a round the same
-// strip shows your tank, your bomb and how many drops you can still take.
+// The whole floor is always on screen, as large as the frame lets it be. A
+// frame wider than the floor puts the status, the scoreboard, your tank and
+// bomb and the line of controls in the columns either side of it, so the
+// floor takes the whole height. A narrower one stacks them in strips above
+// and below it, with NOTE_ROOM under it for the practice note and, in a round,
+// for your tank and your bomb. Whichever of the two draws the floor bigger is
+// the one used.
 function fit() {
   const ah = Math.max(60, VH - TOP - BOT - 4 - NOTE_ROOM);
-  cs = Math.max(3, Math.min((VW - 16) / W, ah / H));
+  const tall = Math.min((VW - 8) / W, ah / H), side = Math.min((VH - 12) / H, (VW - 2 * SIDE) / W);
+  wide = side > tall;
+  cs = Math.max(3, wide ? side : tall);
   ox = (VW - cs * W) / 2;
-  oy = TOP + (ah - cs * H) / 2;
+  oy = wide ? (VH - cs * H) / 2 : TOP + (ah - cs * H) / 2;
+  colW = wide ? ox : 0;
   fieldTop = oy;
   fieldBot = oy + cs * H;
+}
+
+// Words broken into lines no wider than `most`, at the dots between phrases
+// first and at spaces only when a phrase alone is too long.
+function wrap(s, px, most) {
+  ctx.font = font(px);
+  const out = [];
+  let line = '';
+  const put = (piece, sep) => {
+    const next = line ? line + sep + piece : piece;
+    if (!line || ctx.measureText(next).width <= most) { line = next; return; }
+    out.push(line);
+    line = piece;
+  };
+  for (const phrase of s.split(' · ')) {
+    if (ctx.measureText(phrase).width <= most) { put(phrase, ' · '); continue; }
+    phrase.split(' ').forEach((word, i) => put(word, i ? ' ' : ' · '));
+  }
+  if (line) out.push(line);
+  return out;
 }
 
 const SX = (x) => ox + (x / CELL) * cs + shakeX;
@@ -1401,17 +1430,22 @@ function drawHud(t, now) {
   text('splat', 12, 22, titlePx, '#ff8ac2', 'left');
   ctx.font = font(titlePx);
   const tw = ctx.measureText('splat').width;
-  fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
+  if (wide) fitText(status, 12, 44, 14, colour, colW - 24, 'left');
+  else fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
   text(wireNote(), VW - 50, 22, 10, INK.dim, 'right');
 
   // The scoreboard: one chip a player in their colour, with their share of the
   // floor; the chip of a splatted painter is hollow. Under it, the whole floor
-  // as one bar, every colour's share of it side by side.
+  // as one bar, every colour's share of it side by side. A row across the top
+  // of a narrow frame, a column down the left of a wide one with the bar at its
+  // head.
   const ids = bySeat(t);
   if (ids.length) {
-    const y = narrow ? 46 : 42;
-    const gap = 6, cw = Math.min(150, (VW - 24 - gap * (ids.length - 1)) / ids.length);
-    let x = (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    const gap = 6;
+    const cw = wide ? Math.min(200, colW - 24) : Math.min(150, (VW - 24 - gap * (ids.length - 1)) / ids.length);
+    let x = wide ? 12 : (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    let y = wide ? 86 : narrow ? 46 : 42;
+    const top = y;
     for (const id of ids) {
       const d = t.p[id], mine = id === me, c = SEAT[d.c];
       ctx.fillStyle = mine ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.28)';
@@ -1429,9 +1463,9 @@ function drawHud(t, now) {
       const ww = wins ? ctx.measureText(wins).width + 5 : 0;
       if (wins && cw > 56) text(wins, x + cw - 12 - gw, y + 2, 10, '#eef1ff', 'right');
       if (cw > 64) fitText(mine ? 'you' : nickOf(id), x + 20, y + 3, 12, d.st === LIVE ? (mine ? INK.text : INK.muted) : INK.dim, cw - 34 - gw - ww, 'left');
-      x += cw + gap;
+      if (wide) y += 22 + gap; else x += cw + gap;
     }
-    const bw = Math.min(VW - 24, cs * W), bx = (VW - bw) / 2, by = y + 13;
+    const bw = wide ? cw : Math.min(VW - 24, cs * W), bx = wide ? 12 : (VW - bw) / 2, by = wide ? top - 26 : y + 13;
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
     roundRect(bx, by, bw, 5, 2.5);
     ctx.fill();
@@ -1448,31 +1482,37 @@ function drawHud(t, now) {
     ctx.restore();
   }
 
-  // The one line that says how to play.
+  // The one line that says how to play: across the foot of a narrow frame, and
+  // broken into lines at the foot of the right-hand column of a wide one.
   const how = coarse
     ? 'left thumb walks · a second thumb sprays the way it drags · tap to lob a bomb'
     : 'WASD walks · aim with the mouse, hold to spray (or space) · right click or E lobs a bomb · M mutes';
-  fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20);
+  if (!wide) { fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20); return; }
+  const lines = wrap(how, 12, colW - 24);
+  lines.forEach((s, i) => text(s, VW - 12, VH - 12 - (lines.length - 1 - i) * 17, 12, INK.muted, 'right'));
 }
 
-// Your tank, your bomb and the drops you can still take, in the strip under
-// the floor while a round is on.
+// Your tank, your bomb and the drops you can still take while a round is on:
+// in the strip under the floor, or halfway down the right-hand column of a
+// wide frame, the tag under the gauge.
 function drawMine(t) {
   const d = t.p[myId()];
   if (!d || t.ph === WAIT) return;
   flat();
-  const y = Math.min(fieldBot + NOTE_ROOM / 2 - 8, VH - BOT - 18);
+  const y = wide ? VH / 2 : Math.min(fieldBot + NOTE_ROOM / 2 - 8, VH - BOT - 18);
+  const mid = wide ? VW - colW / 2 : VW / 2, room = wide ? colW - 24 : VW - 24;
   if (d.st !== LIVE) {
     const line = t.ph === PLAY ? 'splatted! back on your pad in ' + Math.max(1, Math.ceil(d.rt / HZ)) : '';
-    if (line) fitText(line, VW / 2, y + 5, 13, INK.muted, VW - 24);
+    if (line) fitText(line, mid, y + 5, 13, INK.muted, room);
     return;
   }
-  const bar = Math.min(110, VW * 0.22);
+  const bar = wide ? Math.min(140, room - 30) : Math.min(110, VW * 0.22);
   const tag = d.bc === 0 && d.ink >= BOMB_COST ? 'bomb ready' : 'bomb charging';
   ctx.font = font(12);
   const tagW = ctx.measureText(tag).width;
-  const total = 30 + bar + 14 + tagW;
-  let x = VW / 2 - total / 2;
+  const total = wide ? 30 + bar : 30 + bar + 14 + tagW;
+  let x = mid - total / 2;
+  if (wide) fitText(tag, mid, y + 26, 12, d.bc === 0 && d.ink >= BOMB_COST ? INK.text : INK.dim, room);
   text('ink', x, y + 4, 11, INK.dim, 'left');
   x += 30;
   ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -1489,6 +1529,7 @@ function drawMine(t) {
     disc(x + bar + 4, y, 2.5);
     ctx.fill();
   }
+  if (wide) return;
   x += bar + 14;
   text(tag, x, y + 4, 12, d.bc === 0 && d.ink >= BOMB_COST ? INK.text : INK.dim, 'left');
 }
@@ -1585,7 +1626,10 @@ function drawOverlay(t, now) {
     const two = humans(t).length >= 2;
     const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
     const tip = two ? null : 'your own ink is a fast lane and refills your tank · a rival\'s is mud';
-    practiceNote(now, VW, head, tip, [[TOP, fieldTop - 4], [fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
+    // A wide frame has no strip above or below the floor: the note sits at
+    // the foot of it for as long as practice lasts.
+    if (wide) practiceNote(now, VW, head, tip, [], VH - 8);
+    else practiceNote(now, VW, head, tip, [[TOP, fieldTop - 4], [fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));

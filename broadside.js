@@ -1,7 +1,7 @@
 /**
  * @disk     broadside
  * @author   claude
- * @version  1
+ * @version  2
  * @players  2-8
  * @about    Sailing ships whose guns only fire sideways. Sail across the wind for speed, turn side-on to a rival and let both broadsides go. Fish treasure out of the sea, sink a ship to spill its gold, and outrun the squall. Most gold at the horn wins.
  * @tags     game, party, realtime, naval, lockstep
@@ -894,7 +894,9 @@ document.body.appendChild(muteBtn);
 
 let coarse = matchMedia('(pointer: coarse)').matches;
 const NOTE_ROOM = 60;
+const SIDE = 160;              // the least a column beside the bay needs for the scoreboard
 let VW = 640, VH = 400, sc = 300, ox = 0, oy = 0, TOP = 58, BOT = 26, dpx = 1, fieldTop = 58, fieldBot = 340;
+let wide = false, colW = 0;
 function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   VW = cv.clientWidth || 640;
@@ -908,16 +910,43 @@ function layout() {
 layout();
 window.addEventListener('resize', layout);
 
-// The whole bay is always on screen, as large as it fits. NOTE_ROOM under it
-// keeps the practice note off the bottom row, and in a round the same strip
-// says how your hull stands and whether your guns are loaded.
+// The whole bay is always on screen, as large as the frame lets it be. A
+// frame wider than the bay puts the status, the scoreboard, the wind, your
+// hull and guns and the line of controls in the columns either side of it, so
+// the bay takes the whole height. A narrower one stacks them in strips above
+// and below it, with NOTE_ROOM under it for the practice note and, in a round,
+// for how your hull stands and whether your guns are loaded. Whichever of the
+// two draws the bay bigger is the one used.
 function fit() {
   const ah = Math.max(60, VH - TOP - BOT - 4 - NOTE_ROOM);
-  sc = Math.max(10, Math.min((VW - 16) / FW, ah / FH));
+  const tall = Math.min((VW - 8) / FW, ah / FH), side = Math.min((VH - 12) / FH, (VW - 2 * SIDE) / FW);
+  wide = side > tall;
+  sc = Math.max(10, wide ? side : tall);
   ox = (VW - FW * sc) / 2;
-  oy = TOP + (ah - FH * sc) / 2;
+  oy = wide ? (VH - FH * sc) / 2 : TOP + (ah - FH * sc) / 2;
+  colW = wide ? ox : 0;
   fieldTop = oy;
   fieldBot = oy + FH * sc;
+}
+
+// Words broken into lines no wider than `most`, at the dots between phrases
+// first and at spaces only when a phrase alone is too long.
+function wrap(s, px, most) {
+  ctx.font = font(px);
+  const out = [];
+  let line = '';
+  const put = (piece, sep) => {
+    const next = line ? line + sep + piece : piece;
+    if (!line || ctx.measureText(next).width <= most) { line = next; return; }
+    out.push(line);
+    line = piece;
+  };
+  for (const phrase of s.split(' · ')) {
+    if (ctx.measureText(phrase).width <= most) { put(phrase, ' · '); continue; }
+    phrase.split(' ').forEach((word, i) => put(word, i ? ' ' : ' · '));
+  }
+  if (line) out.push(line);
+  return out;
 }
 
 const SX = (x) => ox + x * sc + shakeX;
@@ -1674,11 +1703,12 @@ function drawBits() {
   }
 }
 
-// The wind, in a corner of the bay: an arrow the way it blows.
+// The wind, in a corner of the bay or at the top of the right-hand column of
+// a wide frame: an arrow the way it blows.
 function drawWind(t, now) {
   flat();
-  const r = Math.max(13, Math.min(20, sc * 0.03));
-  const cx = SX(FW) - r - 8, cy = SY(0) + r + 8;
+  const r = wide ? Math.min(30, colW / 4) : Math.max(13, Math.min(20, sc * 0.03));
+  const cx = wide ? VW - colW / 2 : SX(FW) - r - 8, cy = wide ? 64 + r : SY(0) + r + 8;
   ctx.fillStyle = 'rgba(8,20,32,0.55)';
   disc(cx, cy, r + 3);
   ctx.fill();
@@ -1734,16 +1764,19 @@ function drawHud(t, now) {
   text('broadside', 12, 22, titlePx, '#9fe3ff', 'left');
   ctx.font = font(titlePx);
   const tw = ctx.measureText('broadside').width;
-  fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
+  if (wide) fitText(status, 12, 44, 14, colour, colW - 24, 'left');
+  else fitText(status, 22 + tw, 22, titlePx, colour, VW - tw - 150, 'left');
   text(wireNote(), VW - 50, 22, 10, INK.dim, 'right');
 
   // The scoreboard: one chip a player in their colour, with their gold; the
-  // chip of a sunk ship is hollow.
+  // chip of a sunk ship is hollow. A row across the top of a narrow frame, a
+  // column down the left of a wide one.
   const ids = bySeat(t);
   if (ids.length) {
-    const y = narrow ? 46 : 44;
-    const gap = 6, cw = Math.min(150, (VW - 24 - gap * (ids.length - 1)) / ids.length);
-    let x = (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    const gap = 6;
+    const cw = wide ? Math.min(200, colW - 24) : Math.min(150, (VW - 24 - gap * (ids.length - 1)) / ids.length);
+    let x = wide ? 12 : (VW - (cw * ids.length + gap * (ids.length - 1))) / 2;
+    let y = wide ? 78 : narrow ? 46 : 44;
     for (const id of ids) {
       const d = t.p[id], mine = id === me, c = SEAT[d.c];
       ctx.fillStyle = mine ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.28)';
@@ -1761,27 +1794,32 @@ function drawHud(t, now) {
       const ww = wins ? ctx.measureText(wins).width + 5 : 0;
       if (wins && cw > 56) text(wins, x + cw - 12 - gw, y + 2, 10, '#dff0ff', 'right');
       if (cw > 64) fitText(mine ? 'you' : nickOf(id), x + 20, y + 3, 12, d.st === SAIL ? (mine ? INK.text : INK.muted) : INK.dim, cw - 34 - gw - ww, 'left');
-      x += cw + gap;
+      if (wide) y += 22 + gap; else x += cw + gap;
     }
   }
 
-  // The one line that says how to play.
+  // The one line that says how to play: across the foot of a narrow frame, and
+  // broken into lines at the foot of the right-hand column of a wide one.
   const how = coarse
     ? 'drag to steer · tap to fire both sides · a light push reefs'
     : 'mouse or ←→/AD steer · click or space fires both sides · S reefs · M mutes';
-  fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20);
+  if (!wide) { fitText(how, VW / 2, VH - 10, 12, INK.muted, VW - 20); return; }
+  const lines = wrap(how, 12, colW - 24);
+  lines.forEach((s, i) => text(s, VW - 12, VH - 12 - (lines.length - 1 - i) * 17, 12, INK.muted, 'right'));
 }
 
 // How your hull stands, whether your guns are loaded and how you lie to the
-// wind, in the strip under the bay while a round is on.
+// wind while a round is on: in the strip under the bay, or halfway down the
+// right-hand column of a wide frame, the tag under the gauges.
 function drawMine(t) {
   const d = t.p[myId()];
   if (!d || t.ph === WAIT) return;
   flat();
-  const y = Math.min(fieldBot + NOTE_ROOM / 2, VH - BOT - 18);
+  const y = wide ? VH / 2 : Math.min(fieldBot + NOTE_ROOM / 2, VH - BOT - 18);
+  const mid = wide ? VW - colW / 2 : VW / 2, room = wide ? colW - 24 : VW - 24;
   if (d.st !== SAIL) {
     const line = t.ph === PLAY ? 'sunk! you are back afloat in a moment' : t.ph === COUNT ? 'get ready' : '';
-    if (line) fitText(line, VW / 2, y + 5, 13, INK.muted, VW - 24);
+    if (line) fitText(line, mid, y + 5, 13, INK.muted, room);
     return;
   }
   const irons = d.hx * t.wx + d.hy * t.wy < IRONS;
@@ -1789,8 +1827,9 @@ function drawMine(t) {
   const tag = irons ? 'in irons · turn off the wind' : d.cd === 0 ? 'guns loaded' : 'reloading';
   ctx.font = font(12);
   const tagW = ctx.measureText(tag).width;
-  const total = pw + 18 + bar + 10 + tagW;
-  let x = VW / 2 - total / 2;
+  const total = wide ? pw + 18 + bar : pw + 18 + bar + 10 + tagW;
+  let x = mid - total / 2;
+  if (wide) fitText(tag, mid, y + 26, 12, irons ? INK.danger : d.cd === 0 ? INK.text : INK.dim, room);
   for (let i = 0; i < d.mh; i++) {
     ctx.fillStyle = i < d.hp ? (d.hp <= 1 ? INK.danger : '#e8f6ff') : 'rgba(255,255,255,0.18)';
     ctx.fillRect(x + i * (pip + gap), y - pip / 2, pip, pip);
@@ -1803,6 +1842,7 @@ function drawMine(t) {
   ctx.fillStyle = d.cd === 0 ? SEAT[d.c] : 'rgba(255,255,255,0.45)';
   roundRect(x, y - 5, Math.max(10, bar * k), 10, 5);
   ctx.fill();
+  if (wide) return;
   x += bar + 10;
   text(tag, x, y + 4, 12, irons ? INK.danger : d.cd === 0 ? INK.text : INK.dim, 'left');
 }
@@ -1899,7 +1939,10 @@ function drawOverlay(t, now) {
     const two = humans(t).length >= 2;
     const head = two ? joinHead(t, Math.max(1, Math.ceil(t.pt / HZ))) : 'practice with the bot · a round starts when someone joins';
     const tip = two ? null : 'your guns only fire sideways · turn side-on to a ship · sail across the wind';
-    practiceNote(now, VW, head, tip, [[TOP, fieldTop - 4], [fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
+    // A wide frame has no strip above or below the bay: the note sits at the
+    // foot of it, over open water, for as long as practice lasts.
+    if (wide) practiceNote(now, VW, head, tip, [], VH - 8);
+    else practiceNote(now, VW, head, tip, [[TOP, fieldTop - 4], [fieldBot + 4, VH - BOT]], Math.min(fieldBot + NOTE_ROOM, VH - BOT) - 6);
   } else if (t.ph === COUNT) {
     const left = t.pt / HZ, n = Math.ceil(left), k = n - left;
     const s = 1.4 - 0.4 * ease(Math.min(1, k * 2.5));
