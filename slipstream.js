@@ -106,11 +106,16 @@ const END_STEPS = 8 * HZ;
 // Each is a loop of points the road's middle line runs smoothly through, and
 // where its start line stands. The line is laid once, at load, by arithmetic
 // alone, so every copy lays it to the same bits; a table only names which.
+// Two stretches far apart along a loop never come near enough for their
+// barriers to touch: where they do, the paint shows one run of tarmac with no
+// barrier across it, a shortcut the race would have to allow or else stop with
+// a barrier nobody can see. The two sides of one tight bend may run into one;
+// that is a corner, and cutting it is driving.
 const TRACKS = [
   { name: 'goggles', at: 0.06, cp: [[0.32, 0.2], [0.8, 0.15], [1.28, 0.2], [1.46, 0.42], [1.38, 0.76], [1.08, 0.85], [0.86, 0.66], [0.62, 0.86], [0.28, 0.82], [0.15, 0.52]] },
-  { name: 'hairpin', at: 0.04, cp: [[0.22, 0.2], [0.62, 0.14], [1.05, 0.2], [1.4, 0.14], [1.48, 0.3], [1.2, 0.36], [0.86, 0.5], [1.2, 0.68], [1.46, 0.74], [1.32, 0.88], [0.72, 0.86], [0.3, 0.84], [0.14, 0.52]] },
-  { name: 'crown', at: 0.02, cp: [[0.2, 0.16], [0.52, 0.18], [0.78, 0.42], [1.04, 0.18], [1.4, 0.16], [1.47, 0.46], [1.16, 0.62], [1.4, 0.84], [0.84, 0.86], [0.52, 0.66], [0.24, 0.86], [0.13, 0.5]] },
-  { name: 'kink', at: 0.07, cp: [[0.25, 0.18], [0.9, 0.14], [1.42, 0.2], [1.44, 0.46], [1.1, 0.58], [1.42, 0.78], [1.0, 0.87], [0.62, 0.7], [0.32, 0.86], [0.14, 0.56]] },
+  { name: 'hairpin', at: 0.04, cp: [[0.22, 0.16], [0.62, 0.13], [1.05, 0.125], [1.34, 0.125], [1.46, 0.18], [1.46, 0.32], [1.34, 0.374], [1.1, 0.374], [0.94, 0.38], [0.83, 0.505], [0.94, 0.63], [1.1, 0.636], [1.34, 0.636], [1.46, 0.69], [1.46, 0.83], [1.34, 0.885], [0.72, 0.884], [0.3, 0.86], [0.14, 0.52]] },
+  { name: 'crown', at: 0.02, cp: [[0.2, 0.17], [0.52, 0.18], [0.78, 0.42], [1.04, 0.18], [1.4, 0.16], [1.47, 0.46], [1.26, 0.57], [1.29, 0.82], [0.86, 0.88], [0.54, 0.7], [0.26, 0.81], [0.13, 0.5]] },
+  { name: 'kink', at: 0.07, cp: [[0.25, 0.18], [0.9, 0.15], [1.43, 0.19], [1.43, 0.44], [1.24, 0.58], [1.3, 0.78], [1.01, 0.88], [0.62, 0.69], [0.32, 0.87], [0.14, 0.56]] },
 ];
 
 // A loop through the points (Catmull-Rom), walked finely and then laid again
@@ -153,24 +158,40 @@ function layTrack(def) {
 }
 const LAID = TRACKS.map(layTrack);
 
-// Where a car stands against its track: the stretch of road it is on, found
-// near the one it was on last — never further, so no car is ever counted on a
-// stretch it could only reach by cutting across the grass — how far along it,
-// and how far off the middle line, signed (positive is to the right).
-const NEAR_BACK = 5, NEAR_AHEAD = 6;
-function locate(T, ci, x, y) {
-  let best = ci, bu = 0, bd = Infinity, bs = 0;
-  for (let o = -NEAR_BACK; o <= NEAR_AHEAD; o++) {
-    const i = (ci + o + N) % N, j = (i + 1) % N;
+// Where a car stands against its track: the nearest point of the road's middle
+// line, sought along the whole loop — the stretch it is on, that point, and how
+// far off the line the car is. The circuit is painted as
+// strokes of that same line, so measured this way the barrier stands exactly
+// where it is drawn. Sought only near the stretch a car was on last, it does
+// not: on the inside of a bend tighter than the barrier is wide the nearest
+// point leaps a long way round in one step, and where the two sides of a tight
+// bend run into one tarmac the far side is out of reach, and either way a car
+// on the painted road meets a barrier nobody can see.
+function locate(T, x, y) {
+  let best = 0, bd = Infinity, bx = 0, by = 0;
+  for (let i = 0; i < N; i++) {
+    const j = i + 1 === N ? 0 : i + 1;
     const ax = T.x[i], ay = T.y[i], sx = T.x[j] - ax, sy = T.y[j] - ay;
-    const ll = sx * sx + sy * sy;
-    const u = clamp(((x - ax) * sx + (y - ay) * sy) / ll, 0, 1);
+    const u = clamp(((x - ax) * sx + (y - ay) * sy) / (sx * sx + sy * sy), 0, 1);
     const px = ax + sx * u, py = ay + sy * u, dx = x - px, dy = y - py;
     const d = dx * dx + dy * dy;
-    if (d < bd) { bd = d; best = i; bu = u; bs = sx * dy - sy * dx; }
+    if (d < bd) { bd = d; best = i; bx = px; by = py; }
   }
-  const dist = Math.sqrt(bd);
-  return { ci: best, u: bu, off: bs >= 0 ? dist : -dist };
+  return { ci: best, px: bx, py: by, off: Math.sqrt(bd) };
+}
+
+// A car through the barrier is put back on it, straight out from the nearest
+// point of the middle line, and loses whatever it was carrying out through
+// it. Pushed back along the road's own sideways instead, a car at a tight
+// bend lands somewhere the next step finds outside again and is thrown about.
+// Answers how fast it was going out.
+function barrier(d, at) {
+  const rx = (d.x - at.px) / at.off, ry = (d.y - at.py) / at.off;
+  d.x = at.px + rx * WALL;
+  d.y = at.py + ry * WALL;
+  const out = d.vx * rx + d.vy * ry;
+  if (out > 0) { d.vx -= rx * out; d.vy -= ry * out; }
+  return out;
 }
 
 // The race. Plain data only: it is fingerprinted and handed over as JSON, and
@@ -334,8 +355,7 @@ function drive(w, T, id, d) {
   const nx = -d.hy, ny = d.hx;
   let f = d.vx * d.hx + d.vy * d.hy;      // speed along where it points
   let l = d.vx * nx + d.vy * ny;          // and its slide sideways
-  const at = locate(T, d.ci, d.x, d.y);
-  const grass = Math.abs(at.off) > HW;
+  const grass = locate(T, d.x, d.y).off > HW;
   let cap = VMAX * (grass ? GRASS : 1);
   if (id === BOT_ID) cap *= BOT_PACE;
   if (d.dr !== -1) cap *= DRAFT_TOW;
@@ -390,19 +410,12 @@ function drive(w, T, id, d) {
 
   // The road under it now, the laps it crossed the line for, and the barrier.
   const was = d.ci;
-  const now = locate(T, was, d.x, d.y);
+  const now = locate(T, d.x, d.y);
   d.ci = now.ci;
   if (was > N - 20 && d.ci < 20) crossed(w, id, d);
   else if (was < 20 && d.ci > N - 20) d.L = Math.max(-3, d.L - 1);
-  if (Math.abs(now.off) > WALL) {
-    const i = now.ci, j = (i + 1) % N;
-    const px = T.x[i] + (T.x[j] - T.x[i]) * now.u, py = T.y[i] + (T.y[j] - T.y[i]) * now.u;
-    const k = (now.off > 0 ? 1 : -1);
-    const rx = -T.ty[i] * k, ry = T.tx[i] * k;   // pointing out through the barrier
-    d.x = px + rx * WALL;
-    d.y = py + ry * WALL;
-    const out = d.vx * rx + d.vy * ry;
-    if (out > 0) { d.vx -= rx * out; d.vy -= ry * out; }
+  if (now.off > WALL) {
+    const out = barrier(d, now);
     d.vx *= 0.97; d.vy *= 0.97;
     if (!d.wl) fx(w, 'scrape', d.x, d.y, id, out);
     d.wl = 1;
@@ -468,8 +481,11 @@ function wakes(w, ids) {
 }
 
 // Cars that touch push apart and trade what they were closing at. A car on a
-// slingshot that hits another hard spins it; the one spun loses its charge.
-function bumps(w, ids) {
+// slingshot that hits another hard spins it; the one spun loses its charge. A
+// car pushed through the barrier is put back on it at once: left there, the
+// next step puts it back and the push puts it out again, and a car pinned
+// against the barrier shakes.
+function bumps(w, T, ids) {
   for (let i = 0; i < ids.length; i++) {
     const A = w.p[ids[i]];
     if (A.gh > 0 || A.fn) continue;
@@ -481,6 +497,9 @@ function bumps(w, ids) {
       const dist = Math.sqrt(dd), nx = dx / dist, ny = dy / dist, push = (2 * CR - dist) / 2;
       A.x -= nx * push; A.y -= ny * push;
       B.x += nx * push; B.y += ny * push;
+      const atA = locate(T, A.x, A.y), atB = locate(T, B.x, B.y);
+      if (atA.off > WALL) barrier(A, atA);
+      if (atB.off > WALL) barrier(B, atB);
       const rv = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
       if (rv >= 0) continue;
       const jn = (-(1 + 0.4) * rv) / 2;
@@ -583,7 +602,7 @@ function step(w) {
   for (const id of ids) drive(w, T, id, w.p[id]);
   if (w.ph !== COUNT && w.ph !== END) wakes(w, ids);
   else for (const id of ids) { const d = w.p[id]; d.dr = -1; d.ch = 0; d.bo = 0; }
-  bumps(w, ids);
+  bumps(w, T, ids);
 }
 
 // A race handed over by somebody else is their claim, and is read as one:
@@ -1468,7 +1487,7 @@ function marks(id, d, pos, now, T) {
   const look = lookOf(id);
   const rx = pos[0] - pos[2] * 0.015, ry = pos[1] - pos[3] * 0.015;
   const f = d.vx * d.hx + d.vy * d.hy, side = Math.abs(d.vx * -d.hy + d.vy * d.hx);
-  const off = Math.abs(locate(T, d.ci, pos[0], pos[1]).off);
+  const off = locate(T, pos[0], pos[1]).off;
   if (look.rear && (side > 0.09 || ((d.fl & 2) && f > 0.2) || d.sp > 0) && off < WALL) {
     const nx = -pos[3] * 0.009, ny = pos[2] * 0.009;
     skids.push([look.rear[0] + nx, look.rear[1] + ny, rx + nx, ry + ny, now]);
