@@ -244,3 +244,30 @@ the same colour at once, and whatever it held up shakes and then falls on
 whoever is below. Air runs out on the way down, air capsules refill it and
 stone is slow to drill. A driller far behind gets a turbo drill. First to the
 bottom wins. (Mr. Driller as a race.)
+
+### pile_up
+
+A falling-block game for 2-8 players, in lockstep. Everybody's pieces fall
+into one shared well at once and pass through each other. A piece that sets
+tumbles down its columns, so the stack never holds a hole. A full row pays
+every block in it to whoever dropped it, plus a bonus to whoever finished
+it, and a stack that reaches your lane chokes it. The floor rises late in a
+round, and whoever trails drops gold blocks worth double. (Tetris in one
+shared well.)
+
+### petri
+
+A colony war in one dish for 2-8 players, in lockstep. Dragging from a
+colony you own to any other sends half its microbes, and a swarm bigger than
+the defenders takes the colony. Bigger colonies grow faster, the gold
+nucleus twice as fast, and every colony grows double in the last stretch of
+a round. Whoever holds under half the leader's microbes grows twice as fast,
+and a player wiped out drifts back as a spore. (Galcon / Auralux.)
+
+### musical_chairs
+
+A party game for 2-8 players, in lockstep. Everyone dances out wide for notes
+while the music plays and scrambles for too few chairs when it stops.
+Whoever is left standing spills half their notes for anybody to grab, and a
+dash bumps a rival dizzy. The music speeds up and the last two songs pay
+double. Whoever trails dances faster and dashes more often. (Musical chairs.)
